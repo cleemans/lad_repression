@@ -552,6 +552,23 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
 
 ```
 
+## Enhancer - Promoter associations
+Obtained from slide-base:
+Enhancer - Promoter associations are obtained by correlating enhancer-promoter 
+pairs within 500 kbases over cell type and organ facets and filtered by an adjusted 
+correlation pvalue: FDR < 10-5 The enhancer-promoter associations are computed between
+enhancers and all FANTOM robust promoters.
+
+This trank used the method published in http://doi.org/doi:10.1038/nature12787 to obtain enhancer-promoter associations:
+
+Linking TSSs and enhancers by expression correlations
+
+We identified all intra-chromosomal enhancer-promoter pairs (470,315 cases, permissive set of enhancers and unique locations of RefSeq protein-coding gene transcript TSSs ± 500 bp) within 500 kb, in which the TSS was expressed >1 TPM in at least one sample, and performed Pearson correlation tests between the expression of such pairs: 64% of enhancers had at least one significant association (Benjamini–Hochberg FDR ≤ 10−5) within that distance. On average, a TSS was associated with 4.9 enhancers and an enhancer with 2.4 TSSs.
+
+Next, we identified which predicted associations were supported by ENCODE ChIA-PET (via RNAPII (MMS-126R)) interaction data21 from four ENCODE cell lines (HCT-116, HeLa-S3, K562, MCF-7) by requiring an overlap of both enhancer and promoter in both (and different) sites of a ChIA-PET interaction pair. An association was considered supported if it overlapped in this way with any cell line replicate of interactions.
+
+For comparison, the fraction of 1,672,958 published10 predicted enhancer-promoter associations derived from DNase data supported by ENCODE ChIA-PET interaction data was calculated.
+
 ```{r, fig.width=15, fig.height=15}
 link_table = read.table('../../../data/tracks/hg19/slidebase_enhancer_tss_associations.bed',
                         stringsAsFactors=F)

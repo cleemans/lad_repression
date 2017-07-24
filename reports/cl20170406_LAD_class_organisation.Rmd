@@ -616,20 +616,141 @@ ggplot(real_kmer[which(real_kmer$class1!='boundary'&real_kmer$class2!='boundary'
 
 
 
+
+
 ```{r}
-load('cl20170426_transcript_correlations_df.RData')
+#genes as Granges object
+tss_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P_per_gene$chr,
+                                              start=P_per_gene$tss,
+                                              end=P_per_gene$tss,
+                                              strand=P_per_gene$strand,
+                                              class=P_per_gene$class,
+                                              name=P_per_gene$name),
+                                              keep.extra.columns=TRUE)
+
+lad_gr = import.bed('../../../data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+
+tss_gr = tss_gr[order(seqnames(tss_gr), start(tss_gr))]
+
 o = findOverlaps(lad_gr[lad_gr$name=='LAD'], tss_gr)
 
-o_table = data.frame(o)
-o_table$class = as.character(tss_gr[o_table$subjectHits]$class)
-o_table$strand = as.vector(strand(tss_gr))[o_table$subjectHits]
-o_table$start = as.vector(start(tss_gr))[o_table$subjectHits]
-o_table$name = as.character(tss_gr[o_table$subjectHits]$name)
-rownames(o_table) = gsub('[.][0-9]+','',as.character(tss_gr[o_table$subjectHits]$name))
 
-test = mclapply(rownames(o_table),function(x,o_table, cor_df){
-        other_table = o_table[rownames(o_table)!=x & rownames(o_table)%in%rownames(cor_df),]
-        data.frame(same_lad = other_table$queryHits == o_table$queryHits[x],
-                   correlation = cor_df[x,rownames(cor_df)])
-    }, o_table=o_table, cor_df=cor_df, mc.cores=3)
+more_in_lad <- function(o_data){
+    count = table(o_data$queryHits)
+    o_data = o_data[o_data$queryHits%in%names(count)[count>1], ]
+    o_data$class = factor(o_data$class)
+    count_table = ddply(o_data,.(queryHits), function(x){
+            table(x$class)
+        })
+    apply(count_table[,-1], 2, function(x){length(which(x>1))})
+}
+
+
+o_data = data.frame(o)
+o_data$class = as.character(tss_gr[o_data$subjectHits]$class)
+o_data$strand = as.vector(strand(tss_gr))[o_data$subjectHits]
+o_data$start = as.vector(start(tss_gr))[o_data$subjectHits]
+o_data$name = as.character(tss_gr[o_data$subjectHits]$name)
+
+real_multi = more_in_lad(o_data)
+
+sim_list_multi = lapply(1:1000, function(x, o_data){
+        o_data$class = sample(o_data$class)
+        more_in_lad(o_data)
+    }, o_data)
+sim_data_multi = do.call(rbind, sim_list_multi)
+sim_melt = melt(sim_data_multi)
+
+ggplot(sim_melt, aes(x=value, color=Var2)) +
+    geom_density() +
+    geom_vline(data=data.frame(Var2=names(real_multi),
+                               value=as.numeric(real_multi)),
+               aes(xintercept=value)) +
+    facet_wrap(~Var2)
+
+```
+
+
+
+```{r}
+count_neighbours<-function(o_data, view){
+    count = table(o_data$queryHits)
+    o_data = o_data[o_data$queryHits%in%names(count)[count>1], ]
+    o_data$class = factor(o_data$class)
+    hit_vec = o_data$queryHits[o_data$class==view]
+    count_list = lapply(hit_vec, function(x){
+        t=table(o_data[o_data$queryHits==x,'class'])
+    })
+    count_data = do.call(rbind, count_list)
+    count_vec = colSums(count_data)
+    count_vec[view] = count_vec[view] - length(hit_vec)
+    return(count_vec)
+}
+
+plot_list = list()
+for (class in c('repressed', 'inactive', 'escaper')){
+    real_count = count_neighbours(o_data, class)
+
+    sim_list_count = mclapply(1:1000, function(x, o_data){
+            o_data$class = sample(o_data$class)
+            count_neighbours(o_data, class)
+        }, o_data, mc.cores=10)
+    sim_data_count = do.call(rbind, sim_list_count)
+    sim_melt = melt(sim_data_count)
+    plot_list[[class]] = ggplot(sim_melt, aes(x=value, color=Var2)) +
+                                geom_density() +
+                                ggtitle(class) +
+                                geom_vline(data=data.frame(Var2=names(real_count),
+                                                           value=as.numeric(real_count)),
+                                           aes(xintercept=value)) +
+                                facet_wrap(~Var2) 
+}
+do.call(grid.arrange, plot_list)
+
+```
+
+
+
+
+
+
+
+
+
+```
+load('cl20170426_transcript_correlations_df.RData')
+
+this_cor = rownames(cor_df) %in% P_per_gene$ensembl_transcript_id
+
+this_cor_df = cor_df[this_cor,this_cor]
+
+o = findOverlaps(lad_gr[lad_gr$name=='LAD'], tss_gr)
+
+o_data = data.frame(o)
+o_data$class = as.character(tss_gr[o_data$subjectHits]$class)
+o_data$strand = as.vector(strand(tss_gr))[o_data$subjectHits]
+o_data$start = as.vector(start(tss_gr))[o_data$subjectHits]
+o_data$name = as.character(tss_gr[o_data$subjectHits]$name)
+rownames(o_data) = gsub('[.][0-9]+','',as.character(tss_gr[o_data$subjectHits]$name))
+
+library(data.table)
+setDTthreads(10)
+
+o_data = o_data[rownames(o_data) %in% rownames(this_cor_df),]
+
+id_vec = rownames(o_data)[o_data$class!='boundary']
+
+
+test = mclapply(id_vec,function(x,o_data, cor_data){
+        other_table = o_data[rownames(o_data)!=x,]
+        result = data.frame(same_lad = other_table$queryHits == o_data[x, 'queryHits'],
+                            same_class = other_table$class == o_data[x, 'class'],
+                            class=o_data[x,'class'],
+                            correlation = as.numeric(cor_data[x,rownames(other_table)]))
+        return(result)
+    }, o_data=o_data, cor_data=this_cor_df, mc.cores=10)
+
+test = do.call(rbind, test)
+
+ggplot(test, aes(x=paste(same_lad, same_class), y=correlation, color=paste(same_lad, same_class))) + geom_violin(alpha=0.3) + facet_wrap(~class, ncol=1)
 ```

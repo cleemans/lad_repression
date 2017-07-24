@@ -155,7 +155,6 @@ grid.arrange(p1,p2)
 ## Mouse LADs
 
 ```{r}
-
 gtf_gr = import('../../../data/tracks/mm9/gencode.vM1.annotation.gtf.gz')
 t_gr = gtf_gr[gtf_gr$type=='transcript']
 load("/home/NFS/users/ca.d.graaf/projects/analyses/CdG130501mouseLmnb1Atlas/CdG140219mouseAtlas10CellType.rData")
@@ -179,3 +178,4 @@ selection = colnames(DamIDbyGene) = colnames(oVAL)
 ggplot(melt(DamIDbyGene), aes(x=value, color=variable)) +
     geom_density()
 
+```

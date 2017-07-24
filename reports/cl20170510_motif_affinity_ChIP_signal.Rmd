@@ -1,0 +1,1603 @@
+
+for f in $(tail -n+2 raw_data/encode_jaspar.txt | awk '{print $1}')
+do
+    out=$(echo $f | sed 's/wgEncodeAwgTfbs/tssr_300_300_/' | \
+          sed 's/.narrowPeak.gz/.signal.txt.gz/')
+    bedtools intersect -wb -a raw_data/tssr_300_300.bed \
+                       -b <(gunzip -c ~/data/tracks/hg19/EncodeTfbs_uniform/$f) | \
+        awk '{arr[$4]+=$13}END{for(a in arr){print a"\t"arr[a]}}' | \
+        gzip -c > $out
+done
+
+```{r, fig.width=10, fig.height=10}
+library(reshape2)
+library(rtracklayer)
+library(DESeq2)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(preprocessCore)
+library(scales)
+library(gage)
+library(fgsea)
+library(CGtools)
+library(gcrma)
+library(limma)
+library(biomaRt)
+library(Matrix)
+library(grid)
+library(data.table)
+load('../raw_data/biomart.rdata')
+
+## There was one promoter that was wrongly annotated
+bm_p[bm_p$ensembl_transcript_id=='ENST00000357491','ensembl_gene_id' ] = 'ENSG00000196350'
+
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+```
+
+
+```{r}
+load("../raw_data/gencode.sure.160617.rda")
+Prom<-gencode.sure.160617; rm(gencode.sure.160617) #simpler name
+#first re-calculate pseudocounts without jitter
+P<-Prom[,c(1:8,23,20,26,28, 27)] #SuRE, GRO-cap, CAGE and LAD columns only
+names(P)[9:13]<-c("SuRE", "GROcap", "CAGE", "LAD", 'tissues_expressed')
+
+
+## for promoters and gene expression let's convert promoter transcript id's to gene id's
+P$ensembl_transcript_id = do.call(rbind, strsplit(P$name, split='[.]'))[,1]
+
+nrow(P) #orriginal number of rows
+bm_match = match(P$ensembl_transcript_id, bm_p$ensembl_transcript_id)
+P<-merge(P, bm_p, by="ensembl_transcript_id", all.x=TRUE)
+nrow(P) #some double rows were introduced
+
+P = P[match(Prom$name, P$name), ]
+
+length(unique(P$ensembl_gene_id)) #number of unique genes
+
+table(P[,c('strand.x','strand.y')]) #almost all strand listings are consistent
+
+P<-P[, colnames(P)!='strand.y']
+colnames(P)[colnames(P)=='strand.x'] = "strand"
+
+
+Pseud<-min(P$SuRE[P$SuRE>0], na.rm=TRUE)/2
+P$SuRE<-P$SuRE+Pseud
+P$SuRE<-log10(P$SuRE)
+PseudGro<-min(P$GROcap[P$GROcap>0], na.rm=TRUE)/2
+P$GROcap<-P$GROcap+PseudGro
+P$GROcap<-log10(P$GROcap)
+PseudCage<-min(P$CAGE[P$CAGE>0], na.rm=TRUE)/2
+P$CAGE<-P$CAGE+PseudCage
+P$CAGE<-log10(P$CAGE)
+
+#then calculate running mean for iLAD promoters:
+P<-P[order(P$SuRE,sample(c(1:nrow(P)))),] #sort by SuRE and then random for ties
+n<-60 #number of windows
+w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+s<-round(seq(from=w/2+0.0001, to=nrow(P)-w/2, length.out=n))
+RM<-data.frame(SuRE.low=rep(NA,n), SuRE.mean=rep(NA,n), SuRE.hi=rep(NA,n), GROcap.lad=rep(NA,n), GROcap.ilad=rep(NA,n))
+RM$SuRE.low=P$SuRE[s-floor(w/2)]
+for(i in 1:n){RM$SuRE.mean[i]=mean(P$SuRE[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+RM$SuRE.hi=P$SuRE[s+floor(w/2)]
+for(i in 1:n)
+  {t<-P[(s[i]-floor(w/2)):(s[i]+floor(w/2)),]
+   RM$GROcap.lad[i]<-mean(t$GROcap[t$LAD==1], na.rm=TRUE)
+   RM$GROcap.ilad[i]<-mean(t$GROcap[t$LAD==0], na.rm=TRUE)
+  }
+
+
+#add first datapoint (SuRE equals pseudocount)
+RM1<-RM[0,] #empty df
+RM1[1,]<-c(rep(log10(Pseud),3), mean(P$GROcap[P$SuRE==log10(Pseud) & P$LAD==1]), mean(P$GROcap[P$SuRE==log10(Pseud) & P$LAD==0]))
+RM<-rbind(RM1, RM)
+rm(RM1)
+
+#finally calculate LRS for all promoters:
+P$LRS<- P$GROcap - approx(x=RM$SuRE.mean, y=RM$GROcap.ilad, xout=P$SuRE, rule=2)$y
+#so the more negative the score, the more 'repressed' is the promoter by its chromatin/LAD context
+
+
+#(arbitrary) cutoffs to define three groups of promoters:
+INACT<- P$SuRE< -0.3 & P$LAD==1 & P$GROcap< -2 #inactive
+NREP<- P$SuRE> 0 & P$LRS> -0.5 & P$LAD==1 & P$GROcap> -2 #not repressed
+REP<- P$SuRE> 0.3 & P$LRS< -1 & P$LAD==1  & P$GROcap< -2 #repressed
+Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+names(Pcnts)<-c("repressed", "escaper", "inactive")
+BND <- P$LAD==1 & !INACT & !NREP & !REP
+
+#add class annotation column to P:
+P$class<-NA
+P$class[P$LAD==0]<-"iLAD"
+P$class[INACT]<-"inactive"
+P$class[NREP]<-"escaper"
+P$class[REP]<-"repressed"
+P$class[BND] <- "boundary"
+P$class = factor(P$class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary'))
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+class_names = paste0(levels(P$class), '; n=',table(P$class))
+names(class_names) = levels(P$class)
+P$class_n_prom = P$class
+levels(P$class_n_prom) = class_names
+COL_class_n_prom = COL_class[names(class_names)]
+names(COL_class_n_prom) = class_names
+
+lad_names = c(LAD=paste0('LAD; n=', table(P$LAD)['1']),
+              iLAD=paste0('LAD; n=', table(P$LAD)['0']))
+P$lad_n_prom = factor(ifelse(P$LAD==1, lad_names['LAD'], lad_names['iLAD']))
+COL_lad_n = COL_lad
+names(COL_lad_n) = lad_names
+
+
+RM_melt = melt(RM, measure.vars=c('GROcap.ilad', 'GROcap.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='GROcap.lad', lad_names['LAD'], lad_names['iLAD'])
+
+```
+
+```{r}
+tss_gr = makeGRangesFromDataFrame(data.frame(seqnames = P$chr,
+                                             start = P$tss,
+                                             end = P$tss,
+                                             row.names = P$name,
+                                             strand=P$strand))
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+
+```
+
+```{r}
+count_rep1 = read.table('../raw_data/expression/K562_rep1ReadsPerGene.out.tab')
+count_rep2 = read.table('../raw_data/expression/K562_rep2ReadsPerGene.out.tab')
+
+count_table = cbind(count_rep1[,4], rep2=count_rep2[,4])
+rownames(count_table) = count_rep1[,1]
+colnames(count_table) = c('rep1', 'rep2')
+exp = SummarizedExperiment(assays = list(counts=count_table[-(1:4), ]))
+dds = DESeqDataSet(exp, design= ~ 1)
+fpm = fpm(dds)
+fpm = rowMeans(fpm)
+fpm = log10(fpm + min(fpm[fpm!=0])/2)
+
+g_match = match(P$ensembl_gene_id, names(fpm))
+P$K562_fpm = NaN
+P$K562_fpm[!is.na(g_match)] = fpm[g_match[!is.na(g_match)]]
+
+
+```
+
+
+```
+liftOver raw_data/tss.bed ~/data/hg19ToHg38.over.chain.gz /dev/stdout raw_data/tss_unmapped.bed | awk '{sub($2,$2-300,$0);sub($3,$3+300,$0);print $0}' > raw_data/tssr_300_300_hg38.bed
+cp raw_data/tssr_300_300.bed raw_data/tssr_300_300_hg19.bed
+
+# min_count="/home/NFS/users/c.leemans/data/ChIP/TF/min_count.txt"
+# rm min_count
+# for file in $(tail -n+2 ~/data/ChIP/TF/META_INFO.tsv | awk -F'\t' '{print $1}')
+# do
+#     bigWigToWig ~/data/ChIP/TF/$file /dev/stdout | \
+#         awk -v F=$file '
+#             BEGIN{
+#                 min=3
+#             }{
+#                 if ($4 < min && $4 !=0 && $4 != "") {
+#                     min=$4
+#                 }
+#             }
+#             END {
+#                 print F"\t"min
+#             }' >> $min_count
+# done
+
+
+for line in $(tail -n+2 ~/data/ChIP/TF/META_INFO.tsv | awk -F'\t' '{print $1">"$4">"$7}')
+do
+    IFS='>' read -r -a array <<< "$line"
+    file=${array[0]}
+    name=${array[1]}
+    genome=raw_data/tssr_300_300_${array[2]}.bed
+
+    bwtool summary -decimal=4 -skip-median -keep-bed -header $genome /home/NFS/users/c.leemans/data/ChIP/TF/$file /dev/stdout | gzip -c > raw_data/tssr_ChIP_300_300/$name.txt.gz
+done
+
+# for line in $(tail -n+2 ~/data/ChIP/TF/META_INFO.tsv | awk -F'\t' '{print $1">"$4">"$7}')
+# do
+#     IFS='>' read -r -a array <<< "$line"
+#     file=${array[0]}
+#     name=${array[1]}
+#     genome=raw_data/tssr_300_300_${array[2]}.bed
+#     pseudo=$(grep $file ~/data/ChIP/TF/min_count.txt | awk '{print $2/2}')
+#     bwtool extract -decimals=5 -tabs bed $genome /home/NFS/research_projects/van_steensel_lab/c.leemans/ChIP/TF/$file /dev/stdout | \
+#         awk -v pseudo=$pseudo '{
+#             logSum=0
+#             for(i = 8; i <= NF; i++) {
+#                 logSum+=log($i + pseudo)
+#             }
+#             print $8
+#             print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6"\t"logSum/$7
+#         }' | gzip -c > raw_data/tssr_ChIP_300_300/$name.txt.gz
+# done
+
+
+
+```
+
+
+```{r}
+tissues_expressed = read.table('../../../data/fantom/max_tissues_expressed.txt.gz',
+                               sep='\t', header=T, stringsAsFactors=T)
+
+aff_table_jaspar = read.table('../raw_data/jaspar_affinity_pseudo/seq_psam.dat',
+                              stringsAsFactors=F)
+colnames(aff_table_jaspar) = gsub('.xml','',colnames(aff_table_jaspar))
+tf_table_jaspar = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1, stringsAsFactors=F)
+colnames(tf_table_jaspar) = c('name', 'species', 'class', 'family')
+tf_translation = read.table('../raw_data/tf_translation.txt', stringsAsFactors=F)
+
+tf_translation$K562_fpm = fpm[tf_translation$gene_id]
+
+
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+tf_translation$KBM7_essential = KBM7_essential[tf_translation$gene_id, 'selected']=='YES'
+tf_translation$HAP1_essential = HAP1_essential[tf_translation$gene_id, 'selected']=='YES'
+
+tf_expression = ddply(tf_translation,.(name),
+                      function(x, te){
+                          name=x$name[1]
+                          ens = which(te$ensembl_gene_id%in%x$gene_id)
+                          if (length(ens) > 0){
+                            tissues= min(te[ens,'tissues_expressed'])
+                          } else {
+                            tissues = NA
+                          }
+                          c(expression=min(x$K562_fpm),
+                            KBM7_essential=any(x$KBM7_essential),
+                            HAP1_essential=any(x$HAP1_essential),
+                            tissues_expressed=tissues)
+                      }, te=tissues_expressed)
+tf_table_jaspar$expression = NaN
+tf_match = match(tf_expression$name, tf_table_jaspar$name)
+tf_table_jaspar$expression[tf_match] = tf_expression$expression
+tf_table_jaspar$tissues_expressed = NaN
+tf_table_jaspar$tissues_expressed[tf_match] = tf_expression$tissues_expressed
+tf_table_jaspar$KBM7_essential = NA
+tf_table_jaspar$KBM7_essential[tf_match] = tf_expression$KBM7_essential
+tf_table_jaspar$HAP1_essential = NA
+tf_table_jaspar$HAP1_essential[tf_match] = tf_expression$HAP1_essential
+
+
+
+link_table = read.table('../raw_data/encode_jaspar.txt', header=T, stringsAsFactors=F)
+link_table$signal_file = gsub('.narrowPeak.gz', '.signal.txt.gz',
+                              gsub('wgEncodeAwgTfbs', '../raw_data/tssr_300_300_',
+                                   link_table$file))
+signal_list = lapply(link_table$signal_file, function(x){
+    lines = readLines(x)
+    if (length(lines) > 0){
+        read.table(text=lines, stringsAsFactors=F, row.names=1)
+    }
+    })
+signal_matrix = matrix(0, nrow=nrow(P), ncol=length(signal_list),
+                       dimnames=list(P$name))
+for (i in 1:length(signal_list)){
+    signal = signal_list[[i]]
+    signal_matrix[rownames(signal), i] = signal[,1]
+}
+
+
+pdf('encode_motif_correlations.pdf')
+for (jaspar_id in colnames(aff_table_jaspar)){
+    chip_index = grep(jaspar_id, link_table$Jaspar_id)
+    if (length(chip_index) > 0){
+        for (i in chip_index){
+            data = data.frame(motif_affinity=aff_table_jaspar[P$name,jaspar_id],
+                              chip_score=signal_matrix[P$name,i],
+                              class=P$class,
+                              LAD=P$LAD)
+            motif_pseudo = min(data$motif_affinity[data$motif_affinity > 0]) / 2
+            chip_pseudo = min(data$chip_score[data$chip_score > 0]) / 2
+            # data$motif_affinity = log10(motif_affinity + motif_pseudo)
+            data$chip_score = log10(data$chip_score )
+            if (!all(data$chip_score==0)){
+                print(ggplot(data[data$class!='boundary',], 
+                         aes(y=chip_score, x=motif_affinity, color=class)) +
+                            geom_point(alpha=0.3,size=0.3) +
+                            ggtitle(link_table$Symbol[i]) +
+                            labs(y='chip score', x='motif affinity') +
+                            stat_smooth(method='lm') +
+                            scale_color_manual(values=COL_class))
+                print(ggplot(data, aes(y=chip_score, x=motif_affinity, color=ifelse(LAD==1, 'LAD', 'iLAD'))) +
+                            geom_point(alpha=0.3,size=0.3) +
+                            ggtitle(link_table$Symbol[i]) +
+                            labs(y='chip score', x='motif affinity') +
+                            stat_smooth(method='lm') +
+                            scale_color_manual(values=COL_lad))
+            }
+            
+                # geom_line(data=data.frame(y=c(0,m), x=c(fit$coefficients[1],
+                #                                         fit$coefficients[2]*m)),
+                #           aes(x=x,y=y), color='black')
+        }
+    }
+}
+dev.off()
+
+pdf('encode_motif_rank_correlations2.pdf')
+for (jaspar_id in colnames(aff_table_jaspar)){
+    chip_index = grep(jaspar_id, link_table$Jaspar_id)
+    if (length(chip_index) > 0){
+        for (i in chip_index){
+            data = data.frame(motif_affinity=aff_table_jaspar[P$name,jaspar_id],
+                              chip_score=signal_matrix[P$name,i],
+                              class=P$class,
+                              LAD=ifelse(P$LAD==1, 'LAD', 'iLAD'))
+            chip_pseudo = min(data$chip_score[data$chip_score > 0]) / 2
+            data$motif_affinity[data$LAD=='LAD'] = order(data$motif_affinity[data$LAD=='LAD'])
+            data$motif_affinity[data$LAD=='iLAD'] = order(data$motif_affinity[data$LAD=='iLAD'])
+            data$chip_score = log10(data$chip_score + chip_pseudo )
+            if (!all(data$chip_score==0)){
+                for (lad in c('iLAD', 'LAD')){
+                    cor = cor(data$chip_score[data$LAD==lad], data$motif_affinity[data$LAD==lad])
+                    title = paste(link_table$Symbol[i], sprintf('cor:%.4f', cor))
+                    print(ggplot(data[data$LAD==lad, ], 
+                            aes(y=chip_score, x=motif_affinity, color=class)) +
+                                geom_point(alpha=0.3,size=0.3) +
+                                ggtitle(title) +
+                                labs(y='chip score', x='motif affinity rank') +
+                                stat_smooth(aes(color=LAD)) +
+                                scale_color_manual(values=c(COL_class, COL_lad)))
+                }
+                
+            }
+            
+                # geom_line(data=data.frame(y=c(0,m), x=c(fit$coefficients[1],
+                #                                         fit$coefficients[2]*m)),
+                #           aes(x=x,y=y), color='black')
+        }
+    }
+}
+dev.off()
+
+p_matched = matchSet(P, 'LAD', 1, 'SuRE')
+pdf('encode_motif_rank_correlations_matched2.pdf')
+for (jaspar_id in colnames(aff_table_jaspar)){
+    chip_index = grep(jaspar_id, link_table$Jaspar_id)
+    if (length(chip_index) > 0){
+        for (i in chip_index){
+            data = data.frame(motif_affinity=aff_table_jaspar[p_matched$name,jaspar_id],
+                              chip_score=signal_matrix[p_matched$name,i],
+                              class=p_matched$class,
+                              LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+            chip_pseudo = min(data$chip_score[data$chip_score > 0])
+            data$motif_affinity[data$LAD=='LAD'] = order(data$motif_affinity[data$LAD=='LAD'])
+            data$motif_affinity[data$LAD=='iLAD'] = order(data$motif_affinity[data$LAD=='iLAD'])
+            # data$chip_score = log10(data$chip_score + chip_pseudo )
+            if (!all(data$chip_score==0)){
+                for (lad in c('iLAD', 'LAD')){
+                    cor = cor(data$chip_score[data$LAD==lad], data$motif_affinity[data$LAD==lad])
+                    title = paste(link_table$Symbol[i], sprintf('cor:%.4f', cor))
+                    print(ggplot(data[data$LAD==lad, ], 
+                            aes(y=chip_score, x=motif_affinity, color=class)) +
+                                geom_point(alpha=0.3,size=0.3) +
+                                ggtitle(title) +
+                                labs(y='chip score', x='motif affinity rank') +
+                                stat_smooth(aes(color=LAD)) +
+                                scale_color_manual(values=c(COL_class, COL_lad)))
+                }
+                
+            }
+            
+                # geom_line(data=data.frame(y=c(0,m), x=c(fit$coefficients[1],
+                #                                         fit$coefficients[2]*m)),
+                #           aes(x=x,y=y), color='black')
+        }
+    }
+}
+dev.off()
+```
+
+
+## overexpression experiments
+
+```{r}
+
+tpm = read.table('../raw_data/GSE57395_54samples.tpm.tab.gz', row.names=1)
+colnames(tpm) = strsplit(readLines('../raw_data/GSE57395_54samples.tpm.tab.gz')[1], '\t')[[1]][1:ncol(tpm) + 1]
+colnames(tpm) = gsub(' ', '_', colnames(tpm))
+tpm = tpm + min(tpm[tpm>0])/2
+
+tpm_days = tpm[,grep('d[0-9]$', colnames(tpm))]
+tpm_other = tpm[,-grep('d[0-9]$', colnames(tpm))]
+
+control = rowMeans(tpm_other[,c('hESC_1', 'hESC_2')])
+fc_table = tpm_other[,c(-2,-3)] / control
+
+
+P_extra = cbind.data.frame(P, fc_table[P$name2,], control=control[P$name2])
+
+pdf('GSE57395_54samples_overexpression.pdf')
+for (tf in c(colnames(fc_table), 'control')){
+    print(ggplot(P_extra, aes_string(x='class', y=paste0('log10(', tf, ')'), color='class')) +
+              geom_violin(alpha=0.5) +
+              geom_point(data=P_extra[P_extra$class%in%names(COL),],
+                   position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+              scale_color_manual(values=COL_class))
+}
+dev.off()
+
+P_extra_matched_ilad = matchSet(P_extra[P_extra$class%in%c('iLAD', 'escaper'),],
+                            'class', 'escaper', 'control')
+
+P_extra_matched_repressed = matchSet(P_extra[P_extra$class%in%c('repressed', 'escaper'),],
+                                     'class', 'escaper', 'control')
+
+P_extra_matched = rbind.data.frame(P_extra_matched_ilad,
+                                   P_extra_matched_repressed[which(P_extra_matched_repressed$class==
+                                                                   'repressed'), ])
+
+pdf('GSE57395_54samples_overexpression_evs_matched.pdf')
+for (tf in colnames(fc_table)){
+    print(ggplot(P_extra_matched, aes_string(x='class', y=paste0('log10(', tf, ')'), color='class')) +
+              geom_violin(alpha=0.5) +
+              geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+              scale_color_manual(values=COL_class))
+}
+dev.off()
+
+
+pdf('GSE57395_54samples_logfc_vs_affinity2.pdf')
+sample_data = read.table('../raw_data/GSE57395_54samples_jaspar.txt', header=T,
+                         stringsAsFactors=F, row.names=1)
+for (sample_id in row.names(sample_data)){
+    jaspar_string = sample_data[sample_id, 'jaspar_id']
+    if (jaspar_string != '-'){
+        jaspar_vec = strsplit(jaspar_string, ',')[[1]]
+        for (jaspar_id in jaspar_vec){
+            affinity_vec = aff_table_jaspar[P$name,jaspar_id]
+            log_fc = log10(fc_table[P$name2,sample_id])
+            data = data.frame(affinity = log10(affinity_vec),
+                              log_fc = log_fc,
+                              class = P$class)
+            jaspar_name = tf_table_jaspar[jaspar_id, 'name']
+            print(ggplot(data[data$class!='boundary', ], aes(x=affinity, y=log_fc, color=class)) +
+                              geom_point(alpha=0.3,size=0.3) +
+                              stat_smooth(method='lm') +
+                              ggtitle(paste(sample_id, jaspar_name)) +
+                              scale_color_manual(values=COL_class) +
+                              facet_wrap(~class))
+        }
+    }
+}
+dev.off()
+
+
+
+
+pdf('GSE57395_54samples_logfc_vs_affinity_rank.pdf')
+sample_data = read.table('../raw_data/GSE57395_54samples_jaspar.txt', header=T,
+                         stringsAsFactors=F, row.names=1)
+for (sample_id in row.names(sample_data)){
+    jaspar_string = sample_data[sample_id, 'jaspar_id']
+    if (jaspar_string != '-'){
+        jaspar_vec = strsplit(jaspar_string, ',')[[1]]
+        for (jaspar_id in jaspar_vec){
+            affinity_vec = aff_table_jaspar[P$name,jaspar_id]
+            log_fc = log10(fc_table[P$name2,sample_id])
+            data = data.frame(affinity = rank(affinity_vec),
+                              log_fc = log_fc,
+                              class = P$class)
+            new_levels = levels(data$class)
+            names(new_levels) = levels(data$class)
+            for (class in levels(data$class)){
+                x = data$log_fc[which(data$class==class)]
+                y = data$affinity[which(data$class==class)]
+                not_na = !is.na(x) & !is.na(y)
+                cor = round(cor(x[not_na],y[not_na]), 4)
+                new_levels[class] = paste(class, cor, sep=';')
+            }
+            levels(data$class) = new_levels[levels(data$class)]
+            jaspar_name = tf_table_jaspar[jaspar_id, 'name']
+            col_vec = COL_class[names(new_levels)]
+            names(col_vec) = new_levels
+            cor = cor(data$affinity, data$log_fc)
+            print(ggplot(data[-grep('boundary', data$class), ], aes(x=affinity, y=log_fc, color=class)) +
+                              geom_point(alpha=0.3,size=0.3) +
+                              stat_smooth() +
+                              ggtitle(paste(sample_id, jaspar_name, cor)) +
+                              scale_color_manual(values=col_vec) +
+                              facet_wrap(~class))
+        }
+    }
+}
+dev.off()
+
+
+esc_lad = import.bed('../../../data/tracks/hg19/cl20170519_hESC_continuous_LAD.bed')
+o = findOverlaps(tss_gr, esc_lad)
+name_vec = names(tss_gr[queryHits(o)])
+lad_vec = esc_lad[subjectHits(o)]$name
+match_vec = match(name_vec, P$name)
+P$LAD_ESC = NA
+P[match_vec, 'LAD_ESC'] = lad_vec
+pdf('GSE57395_54samples_logfc_vs_affinity_ESC_LAD.pdf')
+for (sample_id in row.names(sample_data)){
+    jaspar_string = sample_data[sample_id, 'jaspar_id']
+    if (jaspar_string != '-'){
+        jaspar_vec = strsplit(jaspar_string, ',')[[1]]
+        for (jaspar_id in jaspar_vec){
+            affinity_vec = aff_table_jaspar[P$name,jaspar_id]
+            log_fc = log10(fc_table[P$name2,sample_id])
+            data = data.frame(affinity = rank(affinity_vec),
+                              log_fc = log_fc,
+                              LAD_ESC = P$LAD_ESC)
+            new_levels = levels(data$LAD_ESC)
+            names(new_levels) = levels(data$LAD_ESC)
+            for (LAD_ESC in levels(data$LAD_ESC)){
+                x = data$log_fc[which(data$LAD_ESC==LAD_ESC)]
+                y = data$affinity[which(data$LAD_ESC==LAD_ESC)]
+                not_na = !is.na(x) & !is.na(y)
+                cor = round(cor(x[not_na],y[not_na]), 4)
+                new_levels[LAD_ESC] = paste(LAD_ESC, cor, sep=';')
+            }
+            levels(data$LAD_ESC) = new_levels[levels(data$LAD_ESC)]
+            jaspar_name = tf_table_jaspar[jaspar_id, 'name']
+            cor = cor(data$affinity, data$log_fc)
+            print(ggplot(data[!is.na(data$LAD_ESC), ], aes(x=affinity, y=log_fc, color=LAD_ESC)) +
+                              geom_point(alpha=0.3,size=0.3) +
+                              stat_smooth() +
+                              ggtitle(paste(sample_id, jaspar_name, cor)) +
+                              facet_wrap(~LAD_ESC))
+        }
+    }
+}
+dev.off()
+```
+
+## ENCODE siRNA knockdown
+
+```{r}
+file_list = list.files('../raw_data/',full.names=T,pattern='ENCFF[0-9]{3}[A-Z]{3}.tsv')
+
+table_list = lapply(file_list, read.table, stringsAsFactors=F, header=T, row.names=1)
+
+P_tpm_list = lapply(table_list, function(x, ens_vec){x[ens_vec, 'pme_TPM'] }, P$ensembl_gene_id)
+P_tpm = do.call(cbind.data.frame, P_tpm_list)
+colnames(P_tpm) = c('ATF3_rep1','ATF3_rep2', 'ctrl_ATF_rep1', 'ctrl_ATF_rep2', 'ctrl_rep1', 
+                    'ctrl_rep2', 'LMNA_rep1', 'LMNA_rep2', 'LMNB1_rep1', 'LMNB1_rep2', 'LMNB2_rep1',
+                    'LMNB2_rep2', 'NFE2L2_rep1', 'NFE2L2_rep2')
+P_tpm = P_tpm + min(P_tpm[P_tpm>0], na.rm=T)/2
+P$ATF3 = log10(rowMeans(P_tpm[,c('ATF3_rep1','ATF3_rep2')])/ rowMeans(P_tpm[,c('ctrl_ATF_rep1','ctrl_ATF_rep2')]))
+P$LMNA = log10(rowMeans(P_tpm[,c('LMNA_rep1', 'LMNA_rep2')])/ rowMeans(P_tpm[,c('ctrl_rep1','ctrl_rep2')]))
+P$LMNB1 = log10(rowMeans(P_tpm[,c('LMNB1_rep1', 'LMNB1_rep2')])/ rowMeans(P_tpm[,c('ctrl_rep1','ctrl_rep2')]))
+P$LMNB2 = log10(rowMeans(P_tpm[,c('LMNB2_rep1', 'LMNB2_rep2')])/ rowMeans(P_tpm[,c('ctrl_rep1','ctrl_rep2')]))
+P$NFE2L2 = log10(rowMeans(P_tpm[,c('NFE2L2_rep1', 'NFE2L2_rep2')])/ rowMeans(P_tpm[,c('ctrl_rep1','ctrl_rep2')]))
+P$ctrl = log10(rowMeans(P_tpm[,c('ctrl_rep1','ctrl_rep2')]))
+
+pdf('K562_knockdown_vs_affinity.pdf')
+plot_list = list()
+for (prot in c('ATF3', 'LMNA', 'LMNB1', 'LMNB2', 'NFE2L2', 'ctrl')){
+    plot_list[[prot]] = ggplot(P, aes_string(x='class', y=prot, color='class')) +
+                            geom_violin(alpha=0.5) +
+                            geom_point(data=P[P$class%in%names(COL),],
+                                       position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+                            scale_color_manual(values=COL_class)
+}
+do.call(grid.arrange, c(plot_list, nrow=1))
+
+
+P_matched = matchSet(P[P$class%in%c('iLAD','escaper'),], 'class', 'escaper', 'ctrl')
+plot_list = list()
+for (prot in c('ATF3', 'LMNA', 'LMNB1', 'LMNB2', 'NFE2L2', 'ctrl')){
+    plot_list[[prot]] = ggplot(P_matched, aes_string(x='class', y=prot, color='class')) +
+                            geom_violin(alpha=0.5) +
+                            geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+                            scale_color_manual(values=COL_class)
+}
+do.call(grid.arrange, c(plot_list, nrow=1))
+
+P_matched = matchSet(P[P$class%in%c('iLAD','repressed'),], 'class', 'repressed', 'ctrl')
+plot_list = list()
+for (prot in c('ATF3', 'LMNA', 'LMNB1', 'LMNB2', 'NFE2L2', 'ctrl')){
+    plot_list[[prot]] = ggplot(P_matched, aes_string(x='class', y=prot, color='class')) +
+                            geom_violin(alpha=0.5) +
+                            geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+                            scale_color_manual(values=COL_class)
+}
+do.call(grid.arrange, c(plot_list, nrow=1))
+
+
+jaspar_kd = c(NFE2L2='MA0150.2', ATF3='MA0605.1')
+for (prot in names(jaspar_kd)){
+    data = data.frame(class = P$class,
+                      log_fc = P[,prot],
+                      affinity=rank(aff_table_jaspar[P$name,jaspar_kd[prot]]))
+    print(ggplot(data[data$class!='boundary', ], aes(x=affinity, y=log_fc, color=class)) +
+                              geom_point(alpha=0.3,size=0.3) +
+                              stat_smooth(method='lm') +
+                              ggtitle(paste(sample_id, jaspar_name)) +
+                              scale_color_manual(values=COL_class) +
+                              facet_wrap(~class))
+}
+
+dev.off()
+
+
+CREB_kd = read.table('../raw_data/GSE12056_CREB_KD_raw/file_list.txt', stringsAsFactors=F)
+
+ab = ReadAffy(filenames=paste0('../raw_data/GSE12056_CREB_KD_raw/', CREB_kd[,1]))
+eset = gcrma(ab)
+
+design <- cbind(WT=1, MUvsWT=CREB_kd[,2]=="CREB_Knock-out")
+fit <- lmFit(eset, design)
+fit <- eBayes(fit)
+topTable(fit, coef="MUvsWT")
+
+humanMart = useMart(biomart = 'ensembl', dataset = 'hsapiens_gene_ensembl')
+bm_eg = getBM(attributes=c('affy_hg_u133_plus_2','ensembl_gene_id','hgnc_symbol'),
+              filters='affy_hg_u133_plus_2', values=rownames(fit$coefficients), mart=humanMart)
+
+ens_match = match(bm_eg$ensembl_gene_id, P$ensembl_gene_id)
+
+bm_vec = bm_eg$affy_hg_u133_plus_2[!is.na(ens_match)]
+
+p_kd = P[ens_match[!is.na(ens_match)], ]
+
+pdf('cl20170522_CREB_KD_vs_affinity.pdf')
+
+
+coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                          class = p_kd$class,
+                          affinity = rank(aff_table_jaspar[p_kd$name, 'MA0018.2']))
+new_levels = levels(coefficients$class)
+names(new_levels) = levels(coefficients$class)
+for (class in levels(coefficients$class)){
+    x = coefficients$log_fc[which(coefficients$class==class)]
+    y = coefficients$affinity[which(coefficients$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coefficients$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coefficients$log_fc, coefficients$affinity)
+title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank', round(cor,3))
+ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.2,size=0.1) +
+      stat_smooth() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+
+coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                          class = p_kd$class,
+                          affinity = rank(aff_table_jaspar[p_kd$name, 'MA0605.1']))
+new_levels = levels(coefficients$class)
+names(new_levels) = levels(coefficients$class)
+for (class in levels(coefficients$class)){
+    x = coefficients$log_fc[which(coefficients$class==class)]
+    y = coefficients$affinity[which(coefficients$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coefficients$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coefficients$log_fc, coefficients$affinity)
+title = paste('CREB1 MA0605.1(ATF3 motif) knockdown vs affinity rank', round(cor,3))
+ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.3,size=0.3) +
+      stat_smooth() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+
+coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                          class = p_kd$class,
+                          affinity = rank(aff_table_jaspar[p_kd$name, 'MA0148.3']))
+new_levels = levels(coefficients$class)
+names(new_levels) = levels(coefficients$class)
+for (class in levels(coefficients$class)){
+    x = coefficients$log_fc[which(coefficients$class==class)]
+    y = coefficients$affinity[which(coefficients$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coefficients$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coefficients$log_fc, coefficients$affinity)
+title = paste('CREB1 MA0148.3 (FOXA1 motif) knockdown vs affinity rank', round(cor,3))
+ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.2,size=0.1) +
+      stat_smooth(color='black', size=0.5) +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                          class = p_kd$class,
+                          CREB_affinity = rank(aff_table_jaspar[p_kd$name, 'MA0018.2']),
+                          FOXA1_affinity = rank(aff_table_jaspar[p_kd$name, 'MA0148.3']))
+
+
+aff_cisbp = fread('../raw_data/cis-bp_affinity/seq_psam.dat',
+                  select = c('M3083_1.02.xml', 'M3084_1.02.xml', 'M3089_1.02.xml',
+                             'M3090_1.02.xml', 'M4012_1.02.xml', 'M4013_1.02.xml',
+                             'M6180_1.02.xml', 'M0297_1.02.xml'),
+                  data.table=F)
+rownames(aff_cisbp) = rownames(aff_table_jaspar)
+colnames(aff_cisbp) = gsub('.xml', '', colnames(aff_cisbp))
+for (id in colnames(aff_cisbp)){
+    coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                              class = p_kd$class,
+                              affinity = rank(aff_cisbp[p_kd$name, id]))
+    new_levels = levels(coefficients$class)
+    names(new_levels) = levels(coefficients$class)
+    for (class in levels(coefficients$class)){
+        x = coefficients$log_fc[which(coefficients$class==class)]
+        y = coefficients$affinity[which(coefficients$class==class)]
+        not_na = !is.na(x) & !is.na(y)
+        cor = cor(x[not_na],y[not_na])
+        new_levels[class] = paste(class, round(cor,4), sep=';')
+    }
+    levels(coefficients$class) = new_levels
+    col_vec = COL_class[names(new_levels)]
+    names(col_vec) = new_levels
+    cor = cor(coefficients$log_fc, coefficients$affinity)
+    title = paste('CREB1', id, 'knockdown vs affinity rank', round(cor,3))
+    print(ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+          geom_point(alpha=0.3,size=0.3) +
+          stat_smooth() +
+          ggtitle(title) +
+          scale_color_manual(values=col_vec) +
+          facet_wrap(~class))
+}
+
+dev.off()
+
+
+pdf('cl20170522_CEBPA_OE_vs_affinity.pdf')
+cebpa_vs_wt = read.table('../raw_data/E-GEOD-65235/GSE65235_CTR_vs_CEBPA.txt',
+                         stringsAsFactors=F, sep='\t', header=T)
+min_cebpa = min(cebpa_vs_wt$CEBPA.fpkm[cebpa_vs_wt$CEBPA.fpkm>0])
+min_ctr = min(cebpa_vs_wt$CTR.fpkm[cebpa_vs_wt$CTR.fpkm>0])
+pseudo = min(min_cebpa, min_ctr)
+cebpa_vs_wt$log_fc = log10((cebpa_vs_wt$CEBPA.fpkm + pseudo)/(cebpa_vs_wt$CTR.fpkm + pseudo))
+
+match_vec = match(P$name2, cebpa_vs_wt$name)
+
+coefficients = data.frame(log_fc = cebpa_vs_wt$log_fc[match_vec[!is.na(match_vec)]],
+                          class = P[!is.na(match_vec),'class'],
+                          affinity = rank(aff_table_jaspar[P[!is.na(match_vec),'name'], 'MA0102.3']))
+new_levels = levels(coefficients$class)
+names(new_levels) = levels(coefficients$class)
+for (class in levels(coefficients$class)){
+    x = coefficients$log_fc[which(coefficients$class==class)]
+    y = coefficients$affinity[which(coefficients$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coefficients$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coefficients$log_fc, coefficients$affinity)
+title = paste('CEBPA MA0102.3 knockdown vs affinity rank', round(cor,3))
+ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.2,size=0.1) +
+      stat_smooth() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+
+coefficients = data.frame(log_fc = cebpa_vs_wt$log_fc[match_vec[!is.na(match_vec)]],
+                          class = P[!is.na(match_vec),'class'],
+                          affinity = rank(aff_table_jaspar[P[!is.na(match_vec),'name'], 'MA0019.1']))
+new_levels = levels(coefficients$class)
+names(new_levels) = levels(coefficients$class)
+for (class in levels(coefficients$class)){
+    x = coefficients$log_fc[which(coefficients$class==class)]
+    y = coefficients$affinity[which(coefficients$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coefficients$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coefficients$log_fc, coefficients$affinity)
+title = paste('CEBPA MA0019.1(Ddit3::Cebpa motif) knockdown vs affinity rank', round(cor,3))
+ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.3,size=0.3) +
+      stat_smooth() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+aff_cisbp = fread('../raw_data/cis-bp_affinity/seq_psam.dat',
+                  select = c('M1925_1.02.xml', 'M3031_1.02.xml', 'M3032_1.02.xml',
+                             'M3040_1.02.xml', 'M3047_1.02.xml', 'M6169_1.02.xml',
+                             'M0304_1.02.xml'),
+                  data.table=F)
+rownames(aff_cisbp) = rownames(aff_table_jaspar)
+colnames(aff_cisbp) = gsub('.xml', '', colnames(aff_cisbp))
+for (id in colnames(aff_cisbp)){
+    coefficients = data.frame(log_fc = cebpa_vs_wt$log_fc[match_vec[!is.na(match_vec)]],
+                              class = P[!is.na(match_vec),'class'],
+                              affinity = rank(aff_cisbp[P[!is.na(match_vec),'name'], id]))
+    new_levels = levels(coefficients$class)
+    names(new_levels) = levels(coefficients$class)
+    for (class in levels(coefficients$class)){
+        x = coefficients$log_fc[which(coefficients$class==class)]
+        y = coefficients$affinity[which(coefficients$class==class)]
+        not_na = !is.na(x) & !is.na(y)
+        cor = cor(x[not_na],y[not_na])
+        new_levels[class] = paste(class, round(cor,4), sep=';')
+    }
+    levels(coefficients$class) = new_levels
+    col_vec = COL_class[names(new_levels)]
+    names(col_vec) = new_levels
+    cor = cor(coefficients$log_fc, coefficients$affinity)
+    title = paste('CEBPA', id, 'knockdown vs affinity rank', round(cor,3))
+    print(ggplot(coefficients[-grep('boundary', coefficients$class), ], aes(x=affinity, y=log_fc, color=class)) +
+          geom_point(alpha=0.3,size=0.3) +
+          stat_smooth() +
+          ggtitle(title) +
+          scale_color_manual(values=col_vec) +
+          facet_wrap(~class))
+}
+
+dev.off()
+
+```
+
+
+## ENCODE bigWig vs affinity
+```{r}
+encode_table = read.table('../../../data/ChIP/TF/META_INFO.tsv', sep='\t',
+                          stringsAsFactors=F, header=T)
+signal_list = lapply(paste0('../raw_data/tssr_ChIP_300_300/', encode_table$Target.gene,
+                            '.txt.gz'),
+                     read.table, stringsAsFactors=F, row.names=4, 
+                     col.names=c('chrom', 'start', 'end', 'name','score', 'strand', 'size',
+                                 'num_data', 'min', 'max', 'mean'))
+p_matched = matchSet(P, 'LAD', 1, 'SuRE')
+pdf('encode_motif_rank_correlations_matched.pdf')
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        data = data.frame(motif_affinity=aff_table_jaspar[p_matched$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_matched$name,'mean'],
+                          class=p_matched$class,
+                          LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+        print(head(data))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        data$motif_affinity[data$LAD=='LAD'] = order(data$motif_affinity[data$LAD=='LAD'])
+        data$motif_affinity[data$LAD=='iLAD'] = order(data$motif_affinity[data$LAD=='iLAD'])
+        data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            for (lad in c('iLAD', 'LAD')){
+                cor = cor(data$chip_score[data$LAD==lad], data$motif_affinity[data$LAD==lad],
+                          na.rm=T)
+                title = paste(symbol, sprintf('cor:%.4f', cor))
+                print(ggplot(data[data$LAD==lad, ], 
+                        aes(y=chip_score, x=motif_affinity, color=class)) +
+                            geom_point(alpha=0.3,size=0.3) +
+                            ggtitle(title) +
+                            labs(y='chip score', x='motif affinity rank') +
+                            stat_smooth(aes(color=LAD)) +
+                            scale_color_manual(values=c(COL_class, COL_lad)))
+            }
+            
+        }
+    }
+}
+dev.off()
+
+pdf('encode_motif_rank_correlations_matched3.pdf')
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    chip_id = encode_table$experiment_id[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        data = data.frame(motif_affinity=aff_table_jaspar[p_matched$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_matched$name,'mean'],
+                          class=p_matched$class,
+                          LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        data$motif_affinity[data$LAD=='LAD'] = rank(data$motif_affinity[data$LAD=='LAD'])
+        data$motif_affinity[data$LAD=='iLAD'] = rank(data$motif_affinity[data$LAD=='iLAD'])
+        # data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            for (lad in c('iLAD', 'LAD')){
+                x = data$chip_score[data$LAD==lad]
+                y = data$motif_affinity[data$LAD==lad]
+                not_na = !is.na(x) & !is.na(y)
+                cor = cor(x[not_na],y[not_na])
+                title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+                print(ggplot(data[data$LAD==lad, ], 
+                        aes(y=chip_score, x=motif_affinity, color=class)) +
+                            geom_point(alpha=0.3,size=0.3) +
+                            ggtitle(title) +
+                            labs(y='chip score', x='motif affinity rank') +
+                            stat_smooth(aes(color=LAD)) +
+                            scale_color_manual(values=c(COL_class, COL_lad)))
+            }
+            
+        }
+    }
+}
+dev.off()
+
+
+pdf('encode_motif_rank_correlations_matched2.pdf')
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    chip_id = encode_table$experiment_id[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        data = data.frame(motif_affinity=aff_table_jaspar[p_matched$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_matched$name,'mean'],
+                          class=p_matched$class,
+                          LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        data$motif_affinity = rank(data$motif_affinity)
+        # data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            new_levels = levels(data$class)
+            names(new_levels) = levels(data$class)
+            for (class in levels(data$class)){
+                x = data$chip_score[which(data$class==class)]
+                y = data$motif_affinity[which(data$class==class)]
+                not_na = !is.na(x) & !is.na(y)
+                cor = cor(x[not_na],y[not_na])
+                new_levels[class] = paste(class, cor, sep=';')
+            }
+            levels(data$class) = new_levels
+            col_vec = COL_class[names(new_levels)]
+            names(col_vec) = new_levels
+            title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+            print(ggplot(data, 
+                    aes(y=chip_score, x=motif_affinity, color=class)) +
+                        geom_point(alpha=0.3,size=0.3) +
+                        ggtitle(title) +
+                        labs(y='chip score', x='motif affinity rank') +
+                        stat_smooth() +
+                        facet_wrap(~class, nrow=3) +
+                        scale_color_manual(values=col_vec))
+        }
+    }
+}
+dev.off()
+
+
+
+pdf('encode_motif_rank_correlations_matched_max.pdf')
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        print(jaspar_id)
+        print(symbol)
+        data = data.frame(motif_affinity=aff_table_jaspar[p_matched$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_matched$name,'max'],
+                          class=p_matched$class,
+                          LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+        print(head(data))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        data$motif_affinity[data$LAD=='LAD'] = rank(data$motif_affinity[data$LAD=='LAD'])
+        data$motif_affinity[data$LAD=='iLAD'] = rank(data$motif_affinity[data$LAD=='iLAD'])
+        # data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            for (lad in c('iLAD', 'LAD')){
+                x = data$chip_score[data$LAD==lad]
+                y = data$motif_affinity[data$LAD==lad]
+                not_na = !is.na(x) & !is.na(y)
+                cor = cor(x[not_na],y[not_na])
+                title = paste(symbol, sprintf('cor:%.4f', cor))
+                print(ggplot(data[data$LAD==lad, ], 
+                        aes(y=chip_score, x=motif_affinity, color=class)) +
+                            geom_point(alpha=0.3,size=0.3) +
+                            ggtitle(title) +
+                            labs(y='chip score', x='motif affinity rank') +
+                            stat_smooth(aes(color=LAD)) +
+                            scale_color_manual(values=c(COL_class, COL_lad)))
+            }
+            
+        }
+    }
+}
+dev.off()
+
+
+
+```
+
+## using pseudo-count
+The IRF3 pwm from jaspar produced very discrete results with only a small subset of promoters having an affinity > 0. This is mainly due to a high amount of 0's in the pwm (this pwm was based on just 12 sequences), I thought that maybe if we use a pseudo count, we can overcome this problem at least to a small extend. So I added a pseudo count of 1 to each postion in the matrix, so a column with A=0, C=12, G=0, T=0 would become A=1, C=13, G=1, T=1.
+
+
+```{r}
+
+aff_table_jaspar2 = read.table('../raw_data/jaspar_affinity_pseudo/seq_psam.dat')
+colnames(aff_table_jaspar2) = gsub('.xml','',colnames(aff_table_jaspar2))
+
+i = grep('IRF2', encode_table$Target.gene)
+symbol = encode_table$Target.gene[i]
+chip_id = encode_table$experiment_id[i]
+data = data.frame(motif_affinity=aff_table_jaspar2[p_matched$name,1],
+                  chip_score=signal_list[[i]][p_matched$name,'mean'],
+                  class=p_matched$class,
+                  LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+data$motif_affinity = rank(data$motif_affinity)
+# data$chip_score = log10(data$chip_score + chip_pseudo)
+if (!all(data$chip_score==0)){
+    new_levels = levels(data$class)
+    names(new_levels) = levels(data$class)
+    for (class in levels(data$class)){
+        x = data$chip_score[which(data$class==class)]
+        y = data$motif_affinity[which(data$class==class)]
+        cor = cor(x,y)
+        new_levels[class] = paste(class, cor, sep=';')
+    }
+    levels(data$class) = new_levels
+    col_vec = COL_class[names(new_levels)]
+    names(col_vec) = new_levels
+    title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+    print(ggplot(data, 
+            aes(y=chip_score, x=motif_affinity, color=class)) +
+                geom_point(alpha=0.3,size=0.3) +
+                ggtitle(title) +
+                labs(y='chip score', x='motif affinity rank') +
+                stat_smooth() +
+                facet_wrap(~class, nrow=3) +
+                scale_color_manual(values=col_vec))
+    
+}
+```
+**conclusions:**
+
+Seems to fix the problem with discreteness.
+
+## difference between FeatureREDUCE logo and Jaspar logo
+
+
+```{r}
+
+i = grep('ETV6', encode_table$Target.gene)
+symbol = encode_table$Target.gene[i]
+chip_id = encode_table$experiment_id[i]
+data = data.frame(motif_affinity=aff_table_jaspar2[P$name,'Etv6'],
+                  chip_score=signal_list[[i]][P$name,'mean'],
+                  class=P$class,
+                  LAD=ifelse(P$LAD==1, 'LAD', 'iLAD'))
+chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+# data$motif_affinity = rank(data$motif_affinity)
+# data$chip_score = log10(data$chip_score + chip_pseudo)
+if (!all(data$chip_score==0)){
+    new_levels = levels(data$class)
+    names(new_levels) = levels(data$class)
+    for (class in levels(data$class)){
+        x = data$chip_score[which(data$class==class)]
+        y = data$motif_affinity[which(data$class==class)]
+        cor = cor(x,y)
+        new_levels[class] = paste(class, cor, sep=';')
+    }
+    levels(data$class) = new_levels
+    col_vec = COL_class[names(new_levels)]
+    names(col_vec) = new_levels
+    title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+    print(ggplot(data, 
+            aes(y=chip_score, x=motif_affinity, color=class)) +
+                geom_point(alpha=0.3,size=0.3) +
+                ggtitle(title) +
+                labs(y='chip score', x='motif affinity rank') +
+                stat_smooth() +
+                facet_wrap(~class, nrow=3) +
+                scale_color_manual(values=col_vec))
+    
+}
+
+
+i = grep('ETV6', encode_table$Target.gene)
+symbol = encode_table$Target.gene[i]
+chip_id = encode_table$experiment_id[i]
+data = data.frame(motif_affinity=aff_table_jaspar[P$name,'MA0645.1'],
+                  chip_score=signal_list[[i]][P$name,'mean'],
+                  class=P$class,
+                  LAD=ifelse(P$LAD==1, 'LAD', 'iLAD'))
+chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+# data$motif_affinity = rank(data$motif_affinity)
+# data$chip_score = log10(data$chip_score + chip_pseudo)
+if (!all(data$chip_score==0)){
+    new_levels = levels(data$class)
+    names(new_levels) = levels(data$class)
+    for (class in levels(data$class)){
+        x = data$chip_score[which(data$class==class)]
+        y = data$motif_affinity[which(data$class==class)]
+        cor = cor(x,y)
+        new_levels[class] = paste(class, cor, sep=';')
+    }
+    levels(data$class) = new_levels
+    col_vec = COL_class[names(new_levels)]
+    names(col_vec) = new_levels
+    title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+    print(ggplot(data, 
+            aes(y=chip_score, x=motif_affinity, color=class)) +
+                geom_point(alpha=0.3,size=0.3) +
+                ggtitle(title) +
+                labs(y='chip score', x='motif affinity rank') +
+                stat_smooth() +
+                facet_wrap(~class, nrow=3) +
+                scale_color_manual(values=col_vec))
+    
+}
+```
+**conclusion:**
+
+There might be a small improvement if I properly create pwm's using FeatureREDUCE. I think I can still improve on the settings, but it requires quite some work to get FeatureREDUCE running. Besides it's only usable for PBM experiments. 
+
+
+## let's create PSAMs with pseudo-counts
+
+```
+for file in $(ls Jaspar-Core16/*)
+do
+    file_out=$(echo $file | sed 's/Core16/Core16_pseudo/')
+    sed 's/\[//;s/\]//' $file | \
+        awk '{
+                if (NR==1){
+                    print $0
+                } else if ($1 ~ /[ACGT]/){
+                    printf "%s [", $1
+                    for (i=2;i<=NF;i++){
+                        printf "%5i ", $i + 1
+                    }
+                    print " ]"
+                }
+            }' > $file_out
+done
+
+```
+
+```{r}
+
+pdf('encode_motif_rank_correlations_pseudo.pdf')
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    chip_id = encode_table$experiment_id[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        data = data.frame(motif_affinity=aff_table_jaspar2[p_matched$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_matched$name,'mean'],
+                          class=p_matched$class,
+                          LAD=ifelse(p_matched$LAD==1, 'LAD', 'iLAD'))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        data$motif_affinity = rank(data$motif_affinity)
+        # data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            new_levels = levels(data$class)
+            names(new_levels) = levels(data$class)
+            for (class in levels(data$class)){
+                x = data$chip_score[which(data$class==class)]
+                y = data$motif_affinity[which(data$class==class)]
+                not_na = !is.na(x) & !is.na(y)
+                cor = cor(x[not_na],y[not_na])
+                new_levels[class] = paste(class, cor, sep=';')
+            }
+            levels(data$class) = new_levels
+            col_vec = COL_class[names(new_levels)]
+            names(col_vec) = new_levels
+            title = paste(symbol, chip_id, jaspar_id, sprintf('cor:%.4f', cor))
+            print(ggplot(data, 
+                    aes(y=chip_score, x=motif_affinity, color=class)) +
+                        geom_point(alpha=0.3,size=0.3) +
+                        ggtitle(title) +
+                        labs(y='chip score', x='motif affinity rank') +
+                        stat_smooth() +
+                        facet_wrap(~class, nrow=3) +
+                        scale_color_manual(values=col_vec))
+        }
+    }
+}
+dev.off()
+
+```
+
+
+
+```{r}
+
+wilcox_affinity <- function(x_affinity, y_affinity, groups, tf_table=NULL, id_vec=NULL){
+  if (is.null(id_vec)){
+    id_vec = colnames(x_affinity)
+  }  
+  fit = mclapply(id_vec, function(id){
+    x = x_affinity[,id]
+    y = y_affinity[,id]
+    r = rank(c(x,y))
+    r_x = r[1:length(x)]
+    r_y = r[-(1:length(x))]
+    mean_r = c(mean(r_x), mean(r_y))
+    direction = groups[which(mean_r==max(mean_r))]
+    if (length(direction) == 2){
+      direction = 'unchanged'
+    }
+    median_fc = median(x) / median(y)
+    mean_fc = mean(x) / mean(y)
+    rank_fc = mean_r[1] / mean_r[2]
+    if (length(which(x==0))/length(x)>0.3 &
+        length(which(y==0))/length(y)>0.3){
+      w = chisq.test(rbind(table(x==0), table(y==0)))
+    } else {
+      w = wilcox.test(x, y)
+    }
+    return(list(w,direction, median_fc, mean_fc, rank_fc))
+  })
+  p_vec = unlist(lapply(fit, function(x){ x[[1]]$p.value}))
+  p_adjust = p.adjust(p_vec, method='fdr')
+  direction = lapply(fit, function(x){ x[[2]]})
+  median_fc =  lapply(fit, function(x){ x[[3]]})
+  mean_fc =  lapply(fit, function(x){ x[[4]]})
+  rank_fc =  lapply(fit, function(x){ x[[5]]})
+  if (!is.null(tf_table)){
+    result_table = cbind(id=id_vec, 
+                   tf_table[id_vec, ],
+                   direction=unlist(direction),
+                   p_adjust = p_adjust,
+                   median_fc = unlist(median_fc),
+                   mean_fc = unlist(mean_fc), 
+                   rank_fc = unlist(rank_fc), stringsAsFactors=F)
+  } else {
+    result_table = data.frame(id=id_vec,
+                       direction=unlist(direction),
+                       p_adjust = p_adjust,
+                       median_fc = unlist(median_fc),
+                       mean_fc = unlist(mean_fc), 
+                       rank_fc = unlist(rank_fc), stringsAsFactors=F)
+  }
+  
+  return(result_table)
+}
+
+
+
+upper_quartiles <- function(x_affinity, y_affinity, groups, tf_table, id_vec=NULL){
+  if (is.null(id_vec)){
+    id_vec = colnames(x_affinity)
+  }  
+  fit = mclapply(id_vec, function(id){
+    x = x_affinity[,id]
+    y = y_affinity[,id]
+    r = rank(c(x,y))
+    r_up = r > quantile(r, 0.8)
+    r_up_x = r_up[1:length(x)]
+    r_up_y = r_up[-(1:length(x))]
+    r_x = r[1:length(x)]
+    r_y = r[-(1:length(x))]
+    mean_r = c(mean(r_x), mean(r_y))
+    direction = groups[which(mean_r==max(mean_r))]
+    if (length(direction) == 2){
+      direction = 'unchanged'
+    }
+    median_fc = median(x) / median(y)
+    mean_fc = mean(x) / mean(y)
+    rank_fc = mean_r[1] / mean_r[2]
+    w = chisq.test(rbind(table(r_up_x), table(r_up_y)))
+    return(list(w,direction, median_fc, mean_fc, rank_fc))
+  })
+  p_vec = unlist(lapply(fit, function(x){ x[[1]]$p.value}))
+  p_adjust = p.adjust(p_vec, method='fdr')
+  direction = lapply(fit, function(x){ x[[2]]})
+  median_fc =  lapply(fit, function(x){ x[[3]]})
+  mean_fc =  lapply(fit, function(x){ x[[4]]})
+  rank_fc =  lapply(fit, function(x){ x[[5]]})
+  result_table = cbind(id=id_vec, 
+                       tf_table[id_vec, ],
+                       direction=unlist(direction),
+                       p_adjust = p_adjust,
+                       median_fc = unlist(median_fc),
+                       mean_fc = unlist(mean_fc), 
+                       rank_fc = unlist(rank_fc), stringsAsFactors=F)
+  return(result_table)
+}
+
+tissues_expressed = read.table('../../../data/fantom/max_tissues_expressed.txt.gz',
+                               sep='\t', header=T, stringsAsFactors=T)
+
+tf_table_jaspar = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1, stringsAsFactors=F)
+colnames(tf_table_jaspar) = c('name', 'species', 'class', 'family')
+tf_translation = read.table('../raw_data/tf_translation.txt', stringsAsFactors=F)
+
+tf_translation$K562_fpm = fpm[tf_translation$gene_id]
+
+
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+tf_translation$KBM7_essential = KBM7_essential[tf_translation$gene_id, 'selected']=='YES'
+tf_translation$HAP1_essential = HAP1_essential[tf_translation$gene_id, 'selected']=='YES'
+
+tf_expression = ddply(tf_translation,.(name),
+                      function(x, te){
+                          name=x$name[1]
+                          ens = which(te$ensembl_gene_id%in%x$gene_id)
+                          if (length(ens) > 0){
+                            tissues= min(te[ens,'tissues_expressed'])
+                          } else {
+                            tissues = NA
+                          }
+                          c(expression=min(x$K562_fpm),
+                            KBM7_essential=any(x$KBM7_essential),
+                            HAP1_essential=any(x$HAP1_essential),
+                            tissues_expressed=tissues)
+                      }, te=tissues_expressed)
+tf_table_jaspar$expression = NaN
+tf_match = match(tf_expression$name, tf_table_jaspar$name)
+tf_table_jaspar$expression[tf_match] = tf_expression$expression
+tf_table_jaspar$tissues_expressed = NaN
+tf_table_jaspar$tissues_expressed[tf_match] = tf_expression$tissues_expressed
+tf_table_jaspar$KBM7_essential = NA
+tf_table_jaspar$KBM7_essential[tf_match] = tf_expression$KBM7_essential
+tf_table_jaspar$HAP1_essential = NA
+tf_table_jaspar$HAP1_essential[tf_match] = tf_expression$HAP1_essential
+
+matched_evsr = matchSet(P[P$class%in%c('repressed', 'escaper'), ], 'class', 'escaper', 'SuRE')
+escaper_affinity_m = aff_table_jaspar[matched_evsr[which(matched_evsr$class=='escaper'),'name'],]
+repressed_affinity_m = aff_table_jaspar[matched_evsr[which(matched_evsr$class=='repressed'),'name'],]
+evsr_jaspar_m = upper_quartiles(escaper_affinity_m, repressed_affinity_m, c('escaper', 'repressed'), tf_table_jaspar, id_vec)
+evsr_jaspar_sig_m = evsr_jaspar_m[which(evsr_jaspar_m$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_m$direction=='repressed', 
+                                               evsr_jaspar_m$mean_fc < 1,
+                                               evsr_jaspar_m$mean_fc > 1) &
+                                        evsr_jaspar_m$expression > 0), ]
+write.table(evsr_jaspar_sig_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_sig_chisq_pseudo.txt')
+
+evsr_jaspar_m = wilcox_affinity(escaper_affinity_m, repressed_affinity_m, c('escaper', 'repressed'), tf_table_jaspar, id_vec)
+evsr_jaspar_sig_m = evsr_jaspar_m[which(evsr_jaspar_m$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_m$direction=='repressed', 
+                                               evsr_jaspar_m$mean_fc < 1,
+                                               evsr_jaspar_m$mean_fc > 1) &
+                                        evsr_jaspar_m$expression > 0), ]
+write.table(evsr_jaspar_sig_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_sig_wilcox_pseudo.txt')
+```
+
+
+## 2 iLAD groups similar to escapers and repressed
+
+Maybe if I take a group of iLAD genes similar in GROcap and SuRE to escapers and one similar to repressed, the same factors will show up.
+
+```{r}
+p_esc = P[P$class%in%c('iLAD', 'escaper'), ]
+p_esc = p_esc[order(round(p_esc$GROcap,3), round(p_esc$SuRE)), ]
+i_vec = which(p_esc$class=='escaper')
+p_esc_star = p_esc[c(i_vec-1, i_vec+1), ]
+p_esc_star = p_esc_star[p_esc_star$class!='escaper', ]
+p_esc_star$class_ = 'escaper*'
+
+p_rep = P[P$class%in%c('iLAD', 'repressed'), ]
+p_rep = p_rep[order(round(p_rep$GROcap,3), round(p_rep$SuRE)), ]
+i_vec = which(p_rep$class=='repressed')
+p_rep_star = p_rep[c(i_vec-1, i_vec+1), ]
+p_rep_star = p_rep_star[p_rep_star$class!='repressed', ]
+p_rep_star$class_ = 'repressed*'
+
+p_star = rbind(p_esc_star, p_rep_star)
+p_star_m = matchSet(p_star, 'class_', 'escaper*', 'SuRE')
+
+
+escaper_star_aff = aff_table_jaspar[p_star_m[which(p_star_m$class_=='escaper*'),'name'],]
+repressed_star_aff = aff_table_jaspar[p_star_m[which(p_star_m$class_=='repressed*'),'name'],]
+
+evsr_star_m = wilcox_affinity(escaper_star_aff, repressed_star_aff, c('escaper*', 'repressed*'), tf_table_jaspar, id_vec)
+write.table(evsr_star_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_star_all.txt')
+evsr_star_sig_m = evsr_star_m[which(evsr_star_m$p_adjust < 0.05 &
+                                    ifelse(evsr_star_m$direction=='repressed*', 
+                                           evsr_star_m$mean_fc < 1,
+                                           evsr_star_m$mean_fc > 1) &
+                                    evsr_star_m$expression > 0), ]
+write.table(evsr_star_sig_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_star_sig.txt')
+```
+
+
+
+```{r}
+
+pdf('sure_gro_motif_rank_correlations2.pdf')
+p_ilad = P[P$LAD==0, ]
+for (id in colnames(aff_table_jaspar)){
+    data = data.frame(motif_affinity=aff_table_jaspar[p_ilad$name,id],
+                      GROcap=p_ilad$GROcap,
+                      SuRE=p_ilad$SuRE)
+    data$motif_affinity = rank(data$motif_affinity)
+    new_levels = levels(data$variable)
+    names(new_levels) = levels(data$variable)
+    for (variable in levels(data$variable)){
+        x = data$chip_score[which(data$variable==variable)]
+        y = data$motif_affinity[which(data$variable==variable)]
+        not_na = !is.na(x) & !is.na(y)
+        cor = cor(x[not_na],y[not_na])
+        new_levels[variable] = paste(variable, cor, sep=';')
+    }
+    print(ggplot(melt(data,measure.vars=c('GROcap','SuRE')),
+                 aes(x=motif_affinity, y=value, color=variable)) +
+            geom_point(alpha=0.3,size=0.3) +
+            ggtitle(tf_table_jaspar[id,'name']) +
+            labs(y='log10(signal)', x='motif affinity rank') +
+            stat_smooth() +
+            facet_wrap(~variable))
+}
+dev.off()
+pdf('LRS_motif_rank_correlations2.pdf')
+p_lad = P[P$LAD==1&P$SuRE > 0.3, ]
+for (id in colnames(aff_table_jaspar)){
+    data = data.frame(motif_affinity=aff_table_jaspar[p_lad$name,id],
+                      LRS=p_lad$LRS)
+    data$motif_affinity = rank(data$motif_affinity)
+    cor = cor(data$motif_affinity, data$LRS)
+    print(ggplot(data,
+                 aes(x=motif_affinity, y=LRS, color='red')) +
+            geom_point(alpha=0.3,size=0.3) +
+            ggtitle(paste(tf_table_jaspar[id,'name'], cor, sep=' cor=')) +
+            labs(y='log10(signal)', x='motif affinity rank') +
+            stat_smooth())
+}
+dev.off()
+
+pdf('sure_gro_lad_motif_rank_correlations.pdf')
+p_lad = P[P$LAD==1, ]
+for (id in colnames(aff_table_jaspar)){
+    data = data.frame(motif_affinity=aff_table_jaspar[p_lad$name,id],
+                      GROcap=p_lad$GROcap,
+                      SuRE=p_lad$SuRE)
+    data$motif_affinity = rank(data$motif_affinity)
+    new_levels = levels(data$variable)
+    names(new_levels) = levels(data$variable)
+    for (variable in levels(data$variable)){
+        x = data$chip_score[which(data$variable==variable)]
+        y = data$motif_affinity[which(data$variable==variable)]
+        not_na = !is.na(x) & !is.na(y)
+        cor = cor(x[not_na],y[not_na])
+        new_levels[variable] = paste(variable, cor, sep=';')
+    }
+    print(ggplot(melt(data,measure.vars=c('GROcap','SuRE')),
+                 aes(x=motif_affinity, y=value, color=variable)) +
+            geom_point(alpha=0.3,size=0.3) +
+            ggtitle(tf_table_jaspar[id,'name']) +
+            labs(y='log10(signal)', x='motif affinity rank') +
+            stat_smooth() +
+            facet_wrap(~variable))
+}
+dev.off()
+
+
+```
+
+AffinityProfile -sequence=raw_data/tssr_300_300.fa \
+                -strand=2 \
+                -psam_list=$REDUCE_SUITE/data/PSAMs/pwm_comb.list \
+                -output=raw_data/combo_affinity
+
+
+```{r}
+
+aff_table_combo = read.table('../raw_data/combo_affinity/seq_psam.dat')
+colnames(aff_table_combo) = gsub('.xml','',colnames(aff_table_combo))
+
+
+matched_evsr = matchSet(P[P$class%in%c('repressed', 'escaper'), ], 'class', 'escaper', 'SuRE')
+escaper_affinity_m = aff_table_combo[matched_evsr[which(matched_evsr$class=='escaper'),'name'],]
+repressed_affinity_m = aff_table_combo[matched_evsr[which(matched_evsr$class=='repressed'),'name'],]
+evsr_combo_m = wilcox_affinity(escaper_affinity_m, repressed_affinity_m, c('escaper', 'repressed'))
+
+evsr_combo_sig_m = evsr_combo_m[which(evsr_combo_m$p_adjust < 0.05 &
+                                        ifelse(evsr_combo_m$direction=='repressed', 
+                                               evsr_combo_m$mean_fc < 1,
+                                               evsr_combo_m$mean_fc > 1)), ]
+write.table(evsr_combo_sig_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_sig_combo.txt')
+
+
+pdf('evsr_combo_violin.pdf')
+for (id in evsr_combo_sig_m$id){
+  df = data.frame(class=matched_evsr$class,
+                  affinity=aff_table_combo[matched_evsr$name, id])
+  if (!(all(df[df$class=='repressed','affinity']==0) |
+     all(df[df$class=='escaper','affinity']==0))){
+    print(ggplot(df, aes(x=class, y=log10(affinity), color=class)) + 
+            geom_violin() +
+            ggtitle(paste0(id, '; ', evsr_combo_sig_m[id, 'name'])) +
+            geom_point(position=position_jitter(0.5), alpha=0.3, size=0.3) +
+            scale_color_manual(values=COL))
+  }
+}
+dev.off()
+
+```
+
+
+
+```{r}
+
+encode_table = read.table('../../../data/ChIP/TF/META_INFO.tsv', sep='\t',
+                          stringsAsFactors=F, header=T)
+signal_list = lapply(paste0('../raw_data/tssr_ChIP_300_300/', encode_table$Target.gene,
+                            '.txt.gz'),
+                     read.table, stringsAsFactors=F, row.names=4, 
+                     col.names=c('chrom', 'start', 'end', 'name','score', 'strand', 'size',
+                                 'num_data', 'min', 'max', 'mean'))
+
+chrom_gr = import.bed('../../../data/tracks/hg19/wgEncodeBroadHmmK562HMM.bed')
+
+o = findOverlaps(tss_gr, chrom_gr[chrom_gr$name=='1_Active_Promoter'])
+p_active = P[P$name%in%names(tss_gr[queryHits(o)]), ]
+
+for (i in 1:nrow(encode_table)){
+    symbol = encode_table$Target.gene[i]
+    chip_id = encode_table$experiment_id[i]
+    pattern = sprintf('^%s$|^%s::|::%s$', symbol, symbol, symbol)
+    j_vec = grep(pattern, toupper(tf_table_jaspar$name))
+    for (j in j_vec){
+        jaspar_id = rownames(tf_table_jaspar)[j]
+        data = data.frame(motif_affinity=aff_table_jaspar[p_active$name,jaspar_id],
+                          chip_score=signal_list[[i]][p_active$name,'mean'],
+                          class=p_active$class,
+                          LAD=ifelse(p_active$LAD==1, 'LAD', 'iLAD'))
+        chip_pseudo = min(data$chip_score[data$chip_score > 0], na.rm=T) / 2
+        # data$motif_affinity = rank(data$motif_affinity)
+        data$chip_score = log10(data$chip_score + chip_pseudo)
+        if (!all(data$chip_score==0)){
+            for (other_j in rownames(tf_table_jaspar)[-j]){
+                data$other_affinity = aff_table_jaspar[p_active$name, other_j]
+                lm()
+            }
+        }
+    }
+}
+
+```
