@@ -82,6 +82,8 @@ write.table(tf_translation, file='../raw_data/cl20160306_tf_translation_entrez.t
 ```{r}
 library(data.table)
 library(multicore)
+library(parallel)
+library(stringr)
 setDTthreads(10)
 ```
 
@@ -114,6 +116,36 @@ cor_df = as.data.frame(cor_table)
 dimnames(cor_df) = list(rownames(gencode_count), rownames(gencode_count))
 save(cor_df, file='cl20170426_transcript_correlations_df.RData')
 write.table(cor_df, 'cl20170426_transcript_correlations.txt', quote=F, sep='\t', row.names=T, col.names=T)
+
+
+
+bzip_table = read.csv('../raw_data/cl20170504_uniprot_human_bzip_ps50217.csv',
+                      header=T, stringsAsFactors=F)
+ets_table = read.csv('../raw_data/cl20170504_uniprot_human_ets_ps00346.csv',
+                     header=T, stringsAsFactors=F)
+tf_table = rbind(bzip_table, ets_table)
+
+tf_fantom = mclapply(tf_table$Cross.reference..GeneID., function(x, association, counts){
+        entrez = paste0('entrezgene:', gsub(';','',x))
+        y = match(entrez, association)
+        if (length(y) > 0){
+            return(colSums(counts[y,]))
+        }
+    }, association=fantom_annot$entrezgene_id, counts=fantom_counts[-1,], mc.cores=5)
+tf_count = do.call(rbind, tf_fantom)
+rownames(tf_count) = tf_table$Entry
+# tf_table = as.data.table(tf_count)
+tf_norm_matrix = sweep(tf_count, 2, as.numeric(total_vec), '/')
+tf_norm_table = as.data.table(t(tf_norm_matrix))
+tf_cor_table = tf_norm_table[, lapply(.SD, function(x, dt){cor(dt,x)}, dt=norm_table)]
+colnames(tf_cor_table) = rownames(tf_count)
+save(tf_cor_table, file='cl20170505_transcript_ETS-bZIP_correlations.RData')
+tf_cor_df = as.data.frame(tf_cor_table)
+dimnames(tf_cor_df) = list(rownames(gencode_count), rownames(tf_count))
+save(tf_cor_df, file='cl20170505_transcript_ETS-bZIP_correlations_df.RData')
+write.table(tf_cor_df, 'cl20170505_transcript_ETS-bZIP_correlations.txt', quote=F, sep='\t', row.names=T, col.names=T)
+
+
 
 
 enst_table = fantom_table[!is.na(enst_vec), lapply(.SD, sum, na.rm=T), by=enst_vec[!is.na(enst_vec)]] 
@@ -284,4 +316,9 @@ cor_table = ddply(enst_table, .(enst), function(x, norm_matrix, enst_table){
 enst_matrix = ddply(enst_table, .(enst), function(x, norm_matrix){
     colSums(norm_matrix[x$name, ,drop=F])
     }, norm_matrix=norm_matrix, .parallel=T)
+```
+
+
+```{r}
+
 ```

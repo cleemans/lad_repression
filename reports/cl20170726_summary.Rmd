@@ -1,0 +1,2209 @@
+# knitr document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 26-07-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains. In this report I would like to give an overview of what we have found so far.
+
+## Different promoter classes of lamina associated transcripts.
+
+Comparing autonomous promoter activity measured by SuRE and endogenous promoter activity
+
+
+## library and data loading
+```{r, fig.width=10, fig.height=10, echo=FALSE, fig.width=10, fig.height=10}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+      })
+}
+
+p_most_active = most_active(P)
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+new_p = rownames(p_most_active)
+while (nrow(p_other) < 0){
+
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=P[new_p, 'chr'],
+                                                    start=P[new_p, 'tss'],
+                                                    end=P[new_p, 'tss'],
+                                                    strand=P[new_p, 'strand']),
+                                                    keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    p_other = p_other[-subjectHits(o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    new_p = c(new_p, rownames(p_active))
+}
+
+
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+P$CAGE_K562 = K562_CAGE
+P$CAGE_HT1080 = HT1080_CAGE[,7]
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562', 'CAGE_K562',
+              'CAGE_HT1080')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+
+```
+
+
+```{r, fig.width=10, fig.height=10, echo=FALSE}
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+## Figure 1: How are promoters affected by the lamina?
+In general, genes at the lamina are either lowly or not expressed. This can be
+explained in two ways: either low expression leads to lamina association, or
+lamina association leads low expression.
+Using SuRE we can measure promoter activity in an ectopic setting outside of it's
+native context. Comparing this ectopic expression to that of a measure of
+promoter activity in native context, like GROcap, it is possible to assess the
+effect of the local chromatin environment on promoter activity.
+For a promoter actively repressed by it's lamina environment, we would expect
+the promoter to be inactive or lowly expressed in the endogenous context, but
+in the SuRE assay it's activity is elevated to levels comparable to that of an
+active promoter located in an inter-LAD.
+If a promoter is associated with the lamina because it's inactive to begin with
+however, it will stay inactive in the SuRE setting.
+In addition a promoter could be active despite it's lamina environment, if this
+is the case, the relation between endogenous expression and ectopic expression
+will be similar to that of promoters in inter-LADs.
+
+
+```{r figure1a, fig.width=10, fig.height=10, echo=FALSE}
+
+lad_names = c(LAD=paste0('LAD; n=', table(P$LAD_K562)['1']),
+              iLAD=paste0('iLAD; n=', table(P$LAD_K562)['0']))
+P$LAD_K562_n = factor(ifelse(P$LAD_K562==1, lad_names['LAD'], lad_names['iLAD']))
+COL_lad_n = COL_lad
+names(COL_lad_n) = lad_names
+
+
+x_range = c(-4.5,3.5)
+y_range = c(-4,2)
+
+RM_melt = melt(RM_GRO, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names['LAD'], lad_names['iLAD'])
+temp = ggplot(P, aes(x=SuRE_K562, y=GROcap_K562, color=LAD_K562_n)) +
+            geom_point() +
+            geom_line() +
+            theme_bw() +
+            theme(legend.title=element_blank()) +
+            scale_color_manual(values=COL_lad_n)
+legend = g_legend(temp)
+
+main = ggplot(P, aes(x=SuRE_K562, y=GROcap_K562, color=LAD_K562_n)) +
+            geom_point(data=P[P$LAD_K562==0, ], size=0.25, alpha=0.05) +
+            geom_point(data=P[P$LAD_K562==1, ], size=0.5, alpha=0.5) +
+            theme_bw() +
+            lims(x=x_range, y=y_range) +
+            geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+            labs(y='log10(GROcap)', x='log10(SuRE)') +
+            theme(plot.margin = unit(c(0, 0 , 0, 0), "cm"),
+                  legend.position = "",
+                  panel.grid.minor = element_blank()) +
+            scale_color_manual(values=COL_lad_n)
+
+p = ggplotGrob(main)
+
+top = ggplot(P, aes(x = SuRE_K562, color=LAD_K562_n)) +
+           geom_density(alpha = .5) +
+           theme_bw() +
+           xlim(x_range) +
+           theme(axis.ticks       = element_blank(),
+                 panel.background = element_blank(),
+                 panel.grid       = element_blank(),
+                 axis.text.x      = element_blank(),       
+                 axis.title.x     = element_blank(),
+                 legend.position = "",
+                 panel.grid.minor = element_blank()) +
+            scale_color_manual(values=COL_lad_n)
+
+right <- ggplot(P, aes(x = GROcap_K562, color=LAD_K562_n)) +
+       theme_bw() +
+       geom_density(alpha = .5) +
+       xlim(y_range) +
+       theme(axis.ticks       = element_blank(),
+             panel.background = element_blank(),
+             panel.grid       = element_blank(),
+             axis.text.y      = element_blank(),
+             axis.title.y     = element_blank(),
+             legend.position = "",
+             panel.grid.minor = element_blank()) +
+       coord_flip() +
+       scale_color_manual(values=COL_lad_n)
+
+grid.arrange(top, legend, main, right, ncol = 2, nrow = 2, widths  = c(4, 1),
+             heights = c(1, 4), top=paste('endogenous vs. episomal promoter',
+                                          'expression\nin different lamina',
+                                          'context'))
+```
+
+**figure1a: Active repression in LADs**
+
+Figure 1a shows for each promoter, the SuRE expression versus the GROcap expression.
+LAD promoters are colored red while iLAD promoters are colored blue. Lines
+depict running means of SuRE over GROcap ratio for both iLAD and LAD promoters.
+
+While a large part of LAD promoters have a low ectopic expression, and thus are
+inactive, there is also a group of promoters that show a signs of being actively
+repressed having high ectopic expression while they are silenced in their native
+context. In addition, there are also some active promoters with a ratio of
+ectopic expression over native expression similar to that of promoters
+in iLADs.
+
+Another thing that can be seen from this plot is that there is no clear distinct
+groups of promoters, but rather more of a gradient of different relations.
+However using semi arbitrary cut-offs we could still divide promoters in three
+different subgroups of lamina associated promoters, namely: inactive, repressed
+and escaping promoters.
+
+
+```{r figure1b, fig.width=10, fig.height=10, echo=FALSE}
+
+class_names = paste0(levels(P$class_GROcap), '; n=',table(P$class_GROcap))
+names(class_names) = levels(P$class_GROcap)
+P$class_GROcap_n = P$class_GROcap
+levels(P$class_GROcap_n) = class_names
+COL_class_GROcap_n = COL_class[names(class_names)]
+names(COL_class_GROcap_n) = class_names
+
+temp = ggplot(P[P$class_GROcap!='boundary', ], aes(x=SuRE_K562,
+                                                   y=GROcap_K562,
+                                                   color=class_GROcap_n)) +
+            geom_point() +
+            theme_bw() +
+            theme(legend.title=element_blank()) +
+            scale_color_manual(values=c(COL_class_GROcap_n, COL_lad))
+legend1 = g_legend(temp)
+
+temp = ggplot(P[P$class_GROcap!='boundary', ], aes(x=SuRE_K562,
+                                                   y=GROcap_K562,
+                                                   color=LAD_K562_n)) +
+            geom_line() +
+            theme_bw() +
+            theme(legend.title=element_blank()) +
+            scale_color_manual(values=c(COL_lad_n))
+legend2 = g_legend(temp)
+
+panel_ranges = ggplot_build(temp)$layout$panel_ranges[[1]]
+
+p_classes = P[which(P$class_GROcap %in% c('inactive', 'escaper', 'repressed')),]
+
+main = ggplot(P[P$LAD_K562==0, ], aes(x=SuRE_K562, y=GROcap_K562, color=class_GROcap_n)) +
+            geom_line(data=RM_GRO[RM_GRO$x.mean>0,],
+                      aes(x=x.mean, y=y.ilad - 0.5), color='black',
+                      linetype='dotdash', size=0.3) +
+            geom_line(data=RM_GRO[RM_GRO$x.mean>0,],
+                      aes(x=x.mean, y=y.ilad - 1), color='black',
+                      linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=-0.3, linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=0, linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=0.3, linetype='dotdash', size=0.3) +
+            geom_hline(yintercept=-2, linetype='dotdash', size=0.3) +
+            geom_point(size=0.1, alpha=0.1) +
+            geom_point(data=p_classes, size=1) +
+            lims(x=x_range, y=y_range) +
+            theme_bw() +
+            geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+            labs(y='log10(GROcap)', x='log10(SuRE)') +
+            theme(plot.margin = unit(c(0, 0 , 0, 0), "cm"),
+                  legend.position = "",
+                  panel.grid.minor = element_blank()) +
+            scale_color_manual(values=c(COL_class_GROcap_n, COL_lad))
+
+
+
+top = ggplot(P, aes(x = SuRE_K562, color=LAD_K562_n)) +
+           geom_density(alpha = .5) +
+           geom_vline(xintercept=-0.3, linetype='dotdash', size=0.3) +
+           geom_vline(xintercept=0, linetype='dotdash', size=0.3) +
+           geom_vline(xintercept=0.3, linetype='dotdash', size=0.3) +
+           xlim(x_range) +
+           theme_bw() +
+           theme(axis.ticks       = element_blank(),
+                 panel.background = element_blank(),
+                 panel.grid       = element_blank(),
+                 axis.text.x      = element_blank(),       
+                 axis.title.x     = element_blank(),
+                 legend.position = "",
+                 panel.grid.minor = element_blank()) +
+            scale_color_manual(values=COL_lad_n)
+
+right <- ggplot(P, aes(x = GROcap_K562, color=LAD_K562_n)) +
+       geom_density(alpha = .5) +
+       theme_bw() +
+       theme(axis.ticks       = element_blank(),
+             panel.background = element_blank(),
+             panel.grid       = element_blank(),
+             axis.text.y      = element_blank(),
+             axis.title.y     = element_blank(),
+             legend.position = "",
+             panel.grid.minor = element_blank()) +
+       xlim(y_range) +
+       geom_vline(xintercept=-2, linetype='dotdash', size=0.3) +
+       coord_flip() +
+       scale_color_manual(values=COL_lad_n)
+
+
+
+lay <- rbind(c(1,2),
+             c(1,3),
+             c(4,5))
+
+grid.arrange(top, legend1, legend2, main, right,
+             widths = c(4, 1), heights = c(1,1, 8), layout_matrix = lay,
+             top=paste('endogenous vs. episomal promoter expression',
+                       'with 3 defined subgroups of lamina associated promoters',
+                       sep='\n'))
+```
+
+**figure1b:**
+For each promoter inside the lamina we can approximate the distance between
+it's GROcap expression and the running mean of iLADs for the same SuRE expression.
+This we termed the lamina repressive score (LRS).
+
+We defined inactive promoters by a log10 SuRE expression < 0.3 and a log10
+GROcap expression < 2. We defined actively repressed promoters by having a
+SuRE expression > 0.3, a GROcap expression < 2 and a LRS < -1 meaning on average
+10-fold higher GROcap expression for promoters in LAD with the same SuRE expression.
+We defined promoters with a SuRE expression > 0, GROcap > -2 and a LRS > -0.5
+as escaper promoters.
+
+```{r figure1c, fig.width=10, fig.height=10, echo=FALSE}
+chrom_gr = import.bed('../../../data/tracks/hg19/wgEncodeAwgSegmentationCombinedK562.bed.gz')
+COL_chromatin = unique(data.frame(chrom_gr)[,c('name', 'itemRgb')])
+COL_chrom = COL_chromatin[,2]
+
+
+state_vec = c('Promoter', 'Promoter flanking', 'Enhancer', 'Weak Enhancer',
+              'CTCF', 'Transcribed Region', 'Repressed')
+names(state_vec) = c('TSS', 'PF', 'E', 'WE', 'CTCF', 'T', 'R')
+
+names(COL_chrom) = state_vec[COL_chromatin[,1]]
+
+chrom_call = chrom_gr[nearest(tss_gr, chrom_gr)]$name
+P$chrom_call = factor(state_vec[chrom_call], levels=state_vec)
+
+ggplot(P[P$class_GROcap!='boundary',], aes(x=class_GROcap_n, fill=chrom_call)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+
+
+```
+
+
+**figure1c:**
+To validate whether the escaper promoters were indeed active while the repressed
+and inactive promoters are indeed inactive we looked at chromatin signature in the
+form of 7 different states defined by a combination of 25 ChromHMM states and
+25 Segway Segmentation states(https://dx.doi.org/10.1093%2Fnar%2Fgks1284).
+ChIP-seq of H3K4me1, H3K4me2, H3K4me3, H3K9ac, H3K27ac, H3K36me3, H4K20me1,
+H3K27me3, CTCF, H3K9me3, H2A.Z, POL2, DNAse-seq and FAIRE-seq was used to define
+these states.
+
+```{r figure 1de.1, fig.width=10,fig.height=10}
+sure_plus = read.table('../raw_data/enhancer_regions_sure_plus.txt.gz', row.names=4,
+                       stringsAsFactors=F)
+sure_minus = read.table('../raw_data/enhancer_regions_sure_minus.txt.gz', row.names=4,
+                        stringsAsFactors=F)
+grocap_plus = read.table('../raw_data/enhancer_regions_grocap_plus.txt.gz', row.names=4,
+                         stringsAsFactors=F)
+grocap_minus = read.table('../raw_data/enhancer_regions_grocap_minus.txt.gz', row.names=4,
+                          stringsAsFactors=F)
+colnames(sure_plus) =
+    colnames(sure_minus) =
+    colnames(grocap_plus) =
+    colnames(grocap_minus) = c('seqnames', 'start', 'end', 'size', 'num_data',
+                               'min', 'max', 'mean', 'sum')
+
+sure_plus$mean = sure_plus$sum / sure_plus$num_data
+sure_minus$mean = sure_minus$sum / sure_minus$num_data
+grocap_plus$mean = grocap_plus$sum / grocap_plus$num_data
+grocap_minus$mean = grocap_minus$sum / grocap_minus$num_data
+
+P_enh = data.frame(SuRE=rowMeans(cbind(sure_plus$mean, sure_minus$mean)),
+                   GROcap=rowMeans(cbind(grocap_plus$mean,
+                                   abs(grocap_minus$mean))),
+                   row.names=rownames(sure_plus))
+chr_y = grep('chrY', rownames(P_enh))
+P_enh = P_enh[-chr_y,]
+P_enh$SuRE = pseudo_log10(P_enh$SuRE)
+P_enh$GROcap = pseudo_log10(P_enh$GROcap)
+
+enh_gr = makeGRangesFromDataFrame(sure_plus[-chr_y, ])
+
+LAD_K562 = import.bed('../../../data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+o = findOverlaps(enh_gr, LAD_K562[LAD_K562$name=='LAD'])
+P_enh$LAD = 0
+P_enh$LAD[queryHits(o)] = 1
+
+RM_enh = create_RM(P_enh, 'SuRE', 'GROcap', lad='LAD')
+
+P_enh$LRS<- P_enh$GROcap - approx(x=RM_enh$x.mean, y=RM_enh$y.ilad,
+                                  xout=P_enh$SuRE, rule=2)$y
+
+P_enh$class = classify(P_enh$SuRE, P_enh$GROcap, P_enh$LRS, P_enh$LAD, -2)
+
+```
+
+
+```{r figure 1de.2, fig.width=10,fig.height=10}
+lad_names = c(LAD=paste0('LAD; n=', table(P_enh$LAD)['1']),
+              iLAD=paste0('iLAD; n=', table(P_enh$LAD)['0']))
+P_enh$LAD_n = factor(ifelse(P_enh$LAD==1, lad_names['LAD'],
+                             lad_names['iLAD']))
+COL_lad_enh = COL_lad
+names(COL_lad_enh) = lad_names
+
+
+x_range = c(-4.5,3.5)
+y_range = c(-4,2)
+
+RM_melt = melt(RM_enh, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names['LAD'], lad_names['iLAD'])
+temp = ggplot(P_enh, aes(x=SuRE, y=GROcap, color=LAD_n)) +
+            geom_point() +
+            geom_line() +
+            theme_bw() +
+            theme(legend.title=element_blank()) +
+            scale_color_manual(values=COL_lad_enh)
+legend_lad = g_legend(temp)
+
+main_lad = ggplot(P, aes(x=SuRE, y=GROcap, color=LAD_n)) +
+            geom_point(data=P_enh[P_enh$LAD==0, ], size=0.25, alpha=0.05) +
+            geom_point(data=P_enh[P_enh$LAD==1, ], size=0.5, alpha=0.5) +
+            scale_y_continuous(position = "right", limits = y_range) +
+            theme_bw() +
+            xlim(x_range) +
+            geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+            labs(y='log10(GROcap)', x='log10(SuRE)') +
+            theme(legend.position = "",
+                  panel.grid.minor = element_blank(),
+                  axis.title.y     = element_blank()) +
+            scale_color_manual(values=COL_lad_enh)
+
+p = ggplotGrob(main)
+
+
+
+top = ggplot(P_enh, aes(x = SuRE, color=LAD_n)) +
+           geom_density(alpha = .5) +
+           theme_bw() +
+           xlim(x_range) +
+           theme(axis.ticks       = element_blank(),
+                 panel.background = element_blank(),
+                 panel.grid       = element_blank(),
+                 axis.text.x      = element_blank(),       
+                 axis.title.x     = element_blank(),
+                 legend.position = "",
+                 panel.grid.minor = element_blank()) +
+            scale_color_manual(values=COL_lad_enh) +
+            scale_y_continuous(position = "right")
+
+left <- ggplot(P_enh, aes(x = GROcap, color=LAD_n)) +
+       theme_bw() +
+       geom_density(alpha = .5) +
+       xlim(y_range) +
+       theme(axis.ticks       = element_blank(),
+             panel.background = element_blank(),
+             panel.grid       = element_blank(),
+             axis.text.y      = element_blank(),
+             axis.title.y     = element_blank(),
+             legend.position = "",
+             panel.grid.minor = element_blank()) +
+       coord_flip() +
+       scale_y_reverse() +
+       scale_color_manual(values=COL_lad_enh)
+
+# grid.arrange(rectGrob(gp=gpar(col=NA)), top, right, main, ncol = 2, nrow = 2, widths  = c(1, 4),
+#              heights = c(1, 4), top=paste('endogenous vs. episomal enhancer',
+#                                           'activity\nin different lamina',
+#                                           'context'))
+
+```
+
+
+
+```{r figure 1de.3, fig.width=10,fig.height=10}
+class_names = paste0(levels(P_enh$class), '; n=',table(P_enh$class))
+names(class_names) = levels(P_enh$class)
+P_enh$class_n = P_enh$class
+levels(P_enh$class_n) = class_names
+COL_class_enh = COL_class[names(class_names)]
+names(COL_class_enh) = class_names
+
+
+temp = ggplot(P_enh[P_enh$class!='boundary', ], aes(x=SuRE, y=GROcap,
+                                                    color=class_n)) +
+            geom_point() +
+            theme_bw() +
+            theme(legend.title=element_blank()) +
+            scale_color_manual(values=COL_class_enh)
+legend_class = g_legend(temp)
+
+p_classes = P_enh[which(P_enh$class %in% c('inactive', 'escaper', 'repressed')),]
+
+main_class = ggplot(P_enh[P_enh$LAD==0, ], aes(x=SuRE, y=GROcap, color=class_n)) +
+            geom_line(data=RM_enh[RM_enh$x.mean>0,],
+                      aes(x=x.mean, y=y.ilad - 0.5), color='black',
+                      linetype='dotdash', size=0.3) +
+            geom_line(data=RM_enh[RM_enh$x.mean>0,],
+                      aes(x=x.mean, y=y.ilad - 1), color='black',
+                      linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=-0.3, linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=0, linetype='dotdash', size=0.3) +
+            geom_vline(xintercept=0.3, linetype='dotdash', size=0.3) +
+            geom_hline(yintercept=-2, linetype='dotdash', size=0.3) +
+            geom_point(size=0.1, alpha=0.1) +
+            geom_point(data=p_classes, size=1) +
+            lims(x=x_range, y=y_range) +
+            theme_bw() +
+            geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+            labs(y='log10(GROcap)', x='log10(SuRE)') +
+            theme(legend.position = "",
+                  panel.grid.minor = element_blank()) +
+            scale_color_manual(values=c(COL_class_enh, COL_lad))
+
+
+lay <- rbind(c(1,2,3,4),
+             c(5,6,7,7))
+
+ grid.arrange(rectGrob(gp=gpar(col=NA)), top, legend_lad, legend_class, left,
+              main_lad, main_class, widths  = c(1, 4, 2, 2), layout_matrix=lay,
+              heights = c(1, 4), top=paste('endogenous vs. episomal enhancer',
+                                           'activity\nin different lamina',
+                                           'context'))
+
+```
+**figure2d:**
+The same analysis can be performed on putative enhancers, even though the
+majority of enhancers is not expressed in GROcap.
+
+
+
+```{r}
+chrom_call = chrom_gr[nearest(enh_gr, chrom_gr)]$name
+P_enh$chrom_call = factor(state_vec[chrom_call], levels=state_vec)
+
+ggplot(P_enh[P_enh$class!='boundary',], aes(x=class_n, fill=chrom_call)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of enhancer') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.title=element_blank())
+
+
+```
+**figure2f:**
+Although there are more escaper enhancers classified as being repressed in
+this chromatin state definition, still a large part of the escaper enhancers are
+in a chromatin state clasified as being active.
+
+
+
+## Figure 2: Expression signature of different classes of promoters.
+
+One reason for the inactive promoter phenotype could be that they miss the
+necessary factors (e.g. transcription factors) required for activating
+transcription. This would mean that these genes express in only a subset of
+cell-types where the right factor is expressed. Escaper promoters on the other
+hand seem less affected by their chromatin environment. If this feature is not
+cell-type specific, these genes are likely to be more widely expressed across
+different cell-types.
+
+
+```{r figure2a, fig.width=10, fig.height=10, echo=FALSE}
+p_class = P[P$class_GROcap!='boundary', ]
+ggplot(p_class, aes(x=class_GROcap_n, y=tissues_expressed, color=class_GROcap)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_GROcap != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**figure2a:**
+
+Looking at figure 2, inactive promoters are very tissue specific, while escapers
+are generally expressed in a large variety of cell types. Repressed promoters
+show a broad range of expression across tissues.
+
+
+
+```{r figure2b, fig.width=10, fig.height=10, echo=FALSE}
+cpg_table = read.table('../raw_data/cpg_oe_300.txt', header=T,
+                       stringsAsFactors=F, row.names=4)
+
+P$CpG_OE = cpg_table[P$name, 'CpG_OE']
+p_class = P[P$class_GROcap!='boundary', ]
+ggplot(p_class, aes(x=class_GROcap_n, y=CpG_OE, color=class_GROcap)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_GROcap != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5, size=0.5) +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**figure2b:**
+CpG observed over expected (OE) ratio's for different promoter classes. The
+expected CpG frequency is calculated by the following formula:
+**_((number of C + number of G)/2)^2 / length of the sequence_**
+In literature, a threshold for CpG ratio of 0.5 is often used to identify CpG
+islands. Most of the escaper promoters meet this criteria, however, the OE score
+on average is lower than that of iLAD promoters. On the other hand, for inactive
+promoters the CpG OE scores are generally below 0.5.
+
+## Figure 3: Is there a difference in DAM-ID profile around escaper promoters?
+
+To investigate how the escaper promoters manage to escape the repressive environment
+of the LAD we extracted the DAM-ID log2 ratio around the TSS's of the different
+classes.
+
+
+```{r figure3, fig.width=10, fig.height=10, echo=FALSE}
+
+lmnb1_count = read.table('../raw_data/rep2_pLT_LMNB1_0.counts.txt.gz')
+dam_count = read.table('../raw_data/rep2_pLT_Dam_0.counts.txt.gz')
+colnames(lmnb1_count) = colnames(dam_count) = c('seqnames', 'start', 'end', 'count')
+for (lmnb1_file in c('../raw_data/rep2_pLT_LMNB1_0_1.counts.txt.gz',
+                     '../raw_data/rep2_pLT_LMNB1_1.counts.txt.gz',
+                     '../raw_data/rep2_pT_LMNB1.counts.txt.gz')){
+    lmnb1_count[,4] = rowSums(cbind(lmnb1_count[,4], read.table(lmnb1_file)[,4]))
+    dam_file = sub('LMNB1', 'Dam', lmnb1_file)
+    dam_count[,4] = rowSums(cbind(dam_count[,4], read.table(dam_file)[,4]))
+}
+
+
+lmnb1_gr = makeGRangesFromDataFrame(lmnb1_count)
+
+lad_hmm_gr = import.bed('../../../data/tracks/hg19/cl20161019_LAD_2state_K562.bed')
+lad_overlap = findOverlaps(lad_hmm_gr[lad_hmm_gr$name=='LAD'], lmnb1_gr)
+ilad_overlap = findOverlaps(lad_hmm_gr[lad_hmm_gr$name=='interLAD'], lmnb1_gr)
+
+lad_log2 = log2(sum(lmnb1_count[to(lad_overlap),'count'])/sum(dam_count[to(lad_overlap),'count']))
+ilad_log2 = log2(sum(lmnb1_count[to(ilad_overlap),'count'])/sum(dam_count[to(ilad_overlap),'count']))
+
+h<-findOverlaps(tss_gr, lmnb1_gr, maxgap=22000)
+
+oENST<-tss_gr[from(h)]$name
+oPOS<-ifelse(strand(tss_gr[from(h)])=='+',
+             (start(lmnb1_gr[to(h)])+end(lmnb1_gr[to(h)]))/2 - start(tss_gr[from(h)]),
+             end(tss_gr[from(h)]) - (start(lmnb1_gr[to(h)])+end(lmnb1_gr[to(h)]))/2)
+         #coordinates of all overlapping probes relative to the gene starts
+lmnb1_vec <- lmnb1_count[to(h), 'count']
+dam_vec <- dam_count[to(h), 'count']
+
+get_run_log2 <- function(class, P, oENST, oPOS, lmnb1_vec, dam_vec){
+    s<-unique(P$name[which(P$class_GROcap==class) ])
+    s<-s[!is.na(s)]
+    w<-oENST %in% s #which rows in oENST correspond to genes in s
+    subPOS<-oPOS[w]
+    subLMNB1 <-lmnb1_vec[w]
+    subDam <-dam_vec[w]
+    o<-order(subPOS) #need to order all values by distance to gene start for running median plot:
+    subPOS<-subPOS[o]
+    subLMNB1<-subLMNB1[o]
+    subDam<-subDam[o]
+    #determine runmed k:
+    wsize<-floor(length(subPOS)/20) #2% of all datapoints in the set
+    if(!wsize %% 2) {wsize<-wsize+1} #must be odd
+    #plot:
+    run_log2 = log2(runsum(Rle(subLMNB1), k=wsize, endrule='constant')/
+                    runsum(Rle(subDam), k=wsize, endrule='constant'))
+    return(data.frame(log2=as.numeric(run_log2), pos=subPOS, class=class))
+}
+
+log2_list = lapply(names(COL), get_run_log2, P, oENST, oPOS, lmnb1_vec, dam_vec)
+
+log2_data = do.call(rbind.data.frame, log2_list)
+
+ggplot(log2_data, aes(x=pos, y=log2, color=class)) +
+    geom_line() +
+    theme_bw() +
+    scale_color_manual(values=COL) +
+    ylim(-3,3) +
+    geom_hline(yintercept = lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept = ilad_log2, color=COL_lad['iLAD']) +
+    geom_hline(yintercept = 0, color='black') +
+    geom_vline(xintercept = 0, linetype='dotdash')
+
+```
+
+**figure3:**
+
+Promoters of genes > 22000bp were selected and regions were oriented so that
+the gene body was oriented to the right of the TSS. For each class, the running
+mean of the DAM-ID log2 ratio's was calculated.
+Escaper promoters are able escape repression by the lamina environment by being
+locally detached. The gene body of these promoters however is still attached to
+the lamina.
+
+This mechanism appears similar to the observations made by
+https://doi.org/10.1101/122226 in which they identified “DiPs”(Disruption in
+Peripheral signal) of 1-25 kb. In this analysis however the larger DiPs might
+be identified as being a small inter-LAD instead.
+
+
+## Downstream effect of lamina environment on gene expression from escaper promoters
+
+Since the gene-body of a gene under control of an escaper promoter is still
+attached to the lamina, this might prove to be a barrier for elongation,
+or the result of lower elongation rate. Therefore we looked at POL2 occupancy
+around these genes compared to a matched set of iLAD promoters with a similar
+GROcap expression.
+
+
+```{r figure4a.1, echo=FALSE}
+
+count_file_vec = list.files('../raw_data/',pattern='_POL2A_')
+count_file_vec = grep('prom_window', count_file_vec, value=T, invert=T)
+
+count_list = lapply(count_file_vec, function(x){
+        gr = import.bed(paste0('../raw_data/', x))
+        score(gr) = start(gr$thick) / width(gr)
+        return(gr)
+    })
+name_list = lapply(strsplit(count_file_vec, '_'), function(x){
+    if (x[1]=='gene'){
+        r = paste(x[2:4], collapse='_')
+    } else {
+        r = paste(x[1:3], collapse='_')
+    }
+    return(r)
+})
+names(count_list) = unlist(name_list)
+score_table = do.call(cbind,lapply(count_list,function(x){score(x)}))
+
+tssr_POL2A = rowMeans(score_table[,c('tssr_POL2A_rep1', 'tssr_POL2A_rep2')]) /
+             rowMeans(score_table[,c('tssr_POL2A_ctrl1', 'tssr_POL2A_ctrl2')])
+
+body_POL2A = rowMeans(score_table[,c('body_POL2A_rep1', 'body_POL2A_rep2')]) /
+             rowMeans(score_table[,c('body_POL2A_ctrl1', 'body_POL2A_ctrl2')])
+
+
+tssr_match = match(P$name, count_list[['tssr_POL2A_rep1']]$name)
+body_match = match(P$name, count_list[['body_POL2A_rep1']]$name)
+
+
+P$tssr_POL2A = tssr_POL2A[tssr_match]
+
+P$body_POL2A = body_POL2A[body_match]
+
+```
+
+
+```{r figure4a.2, fig.width=10, fig.height=10, echo=FALSE}
+p_matched = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ], 'class_GROcap',
+                     'escaper', 'GROcap_K562')
+p_pol2 = melt(p_matched[,c('class_GROcap', 'tssr_POL2A', 'body_POL2A')])
+p_pol2$variable = factor(p_pol2$variable)
+levels(p_pol2) = c("TSS region (-50bp:+300bp from TSS)",
+                   "Gene body (+300bp:3000bp from TSS)")
+ggplot(p_pol2, aes(x=class_GROcap, y=log10(value), color=class_GROcap)) +
+    geom_violin() +
+    theme_bw() +
+    geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+    scale_color_manual(values=COL_class) +
+    theme() +
+    xlab('promoter class') +
+    facet_wrap('variable')
+
+```
+
+**figure4a:**
+Although the POL2 occupancy around the TSS is roughly similar between iLAD's and
+escapers, there is a substantial difference in the amount of POL2 at the gene-body.
+So although promoters are equally capable to recruit POL2, escaper promoters show
+less elongation.
+
+
+```{r figure4b.1, echo=FALSE}
+
+
+
+## PRO-seq
+proseq_plus_tss = read.table('../raw_data/GSM1480327_K562_PROseq_plus_tss.txt.gz',
+                             sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+proseq_minus_tss = read.table('../raw_data/GSM1480327_K562_PROseq_minus_tss.txt.gz',
+                              sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+strand_vec = which(proseq_plus_tss[,5]=='+')
+proseq_range = 6:ncol(proseq_plus_tss)
+proseq_sense = rbind(proseq_plus_tss[strand_vec, proseq_range],
+                     proseq_minus_tss[-strand_vec, proseq_range] * -1)
+proseq_antisense = rbind(proseq_plus_tss[-strand_vec, proseq_range] * -1,
+                         proseq_minus_tss[strand_vec, proseq_range])
+
+
+##POL2-ChIP
+POL2_tss_table = read.table('../raw_data/POL2A_K562_hg38_tss.txt.gz', sep='\t',
+                            skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss = POL2_tss_table[,6:ncol(POL2_tss_table)]
+POL2_tss[POL2_tss_table$strand=='-', ] = POL2_tss[POL2_tss_table$strand=='-', ncol(POL2_tss):1]
+
+##TT-seq
+ttseq_plus_tss_rep1 = read.table('../raw_data/TTseq_K562_rep1_plus_hg38_tss.txt.gz',
+                                 sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+ttseq_plus_tss_rep2 = read.table('../raw_data/TTseq_K562_rep2_plus_hg38_tss.txt.gz',
+                                 sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+ttseq_plus_tss = ttseq_plus_tss_rep1[,6:ncol(ttseq_plus_tss_rep1)] +
+                 ttseq_plus_tss_rep2[,6:ncol(ttseq_plus_tss_rep2)]
+
+
+ttseq_minus_tss_rep1 = read.table('../raw_data/TTseq_K562_rep1_minus_hg38_tss.txt.gz',
+                                  sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+ttseq_minus_tss_rep2 = read.table('../raw_data/TTseq_K562_rep2_minus_hg38_tss.txt.gz',
+                                  sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+ttseq_minus_tss = ttseq_minus_tss_rep1[,6:ncol(ttseq_minus_tss_rep1)] +
+                  ttseq_minus_tss_rep2[,6:ncol(ttseq_minus_tss_rep2)]
+
+strand_vec = which(ttseq_plus_tss_rep1[,5]=='+')
+ttseq_sense = rbind(ttseq_plus_tss[strand_vec, ],
+                    ttseq_minus_tss[-strand_vec, ])
+ttseq_antisense = rbind(ttseq_plus_tss[-strand_vec, ] * -1,
+                        ttseq_minus_tss[strand_vec, ] * -1)
+
+
+p_most_down = ddply(P[!is.na(P$gene_id),], .(gene_id), function(x){
+    if (nrow(x)==1){
+        result = x[1,]
+    } else if (all(x$strand=='+')){
+        result = x[order(x$tss, decreasing=F)[1],]
+    } else if (all(x$strand=='-')){
+        result = x[order(x$tss)[1],]
+    } else {
+        print('huh???')
+        print(x)
+        result = x[1,]
+    }
+    return(result)
+  })
+
+p_most_up = ddply(P[!is.na(P$gene_id),], .(gene_id), function(x){
+  if (nrow(x)==1){
+      result = x[1,]
+  } else if (all(x$strand=='+')){
+      result = x[order(x$tss)[1],]
+  } else if (all(x$strand=='-')){
+      result = x[order(x$tss, decreasing=F)[1],]
+  } else {
+      print('huh???')
+      print(x)
+      result = x[1,]
+  }
+  return(result)
+})
+
+
+# p_selection = p_most_up[which(p_most_up$class_GROcap%in%c('escaper', 'iLAD') &
+#                               (p_most_up$txEnd - p_most_up$txStart) > 22000), ]
+
+# p_selection = p_most_up[which(p_most_up$class_GROcap%in%c('escaper', 'iLAD') &
+#                               (p_most_up$txEnd - p_most_up$txStart) > 22000), ]
+
+p_selection = P[which(P$class_GROcap%in%c('escaper', 'iLAD') &
+                      (P$txEnd - P$txStart) > 22000), ]
+p_matched = matchSet(p_selection, 'class_GROcap', 'escaper', 'GROcap_K562')
+
+p_matched = p_matched[which(p_matched$name %in% rownames(proseq_sense) &
+                            p_matched$name %in% rownames(ttseq_sense)), ]
+
+escaper_vec = p_matched[which(p_matched$class_GROcap=='escaper'), 'name']
+ilad_vec = p_matched[which(p_matched$class_GROcap=='iLAD'), 'name']
+
+colMedians <- function(x, na.rm=T){
+    as.vector(apply(x, 2, median, na.rm=na.rm))
+}
+
+pos_vec = -110:109 * 200
+
+
+## all our escapers and iLADs in this subset are in all tables
+proseq_sense_mean = rbind(cbind(colMedians(proseq_sense[escaper_vec, ], na.rm=T),
+                               pos_vec, 'escaper'),
+                         cbind(colMedians(proseq_sense[ilad_vec, ], na.rm=T),
+                               pos_vec, 'iLAD'))
+
+POL2_mean = rbind(cbind(colMedians(POL2_tss[escaper_vec, ]), pos_vec, 'escaper'),
+                 cbind(colMedians(POL2_tss[ilad_vec, ]), pos_vec, 'iLAD'))
+
+
+
+ttseq_sense_mean = rbind(cbind(colMedians(ttseq_sense[escaper_vec, ]),
+                              pos_vec, 'escaper'),
+                         cbind(colMedians(ttseq_sense[ilad_vec, ]),
+                               pos_vec, 'iLAD'))
+
+
+sense_data = rbind(cbind(proseq_sense_mean, 'PRO-seq'),
+                   cbind(POL2_mean, 'POL2A-ChIP'),
+                   cbind(ttseq_sense_mean, 'TT-seq'))
+
+
+
+proseq_antisense_mean = rbind(cbind(colMedians(proseq_antisense[escaper_vec, ], na.rm=T),
+                              pos_vec, 'escaper'),
+                        cbind(colMedians(proseq_antisense[ilad_vec, ], na.rm=T),
+                              pos_vec, 'iLAD'))
+
+
+
+ttseq_antisense_mean = rbind(cbind(colMedians(ttseq_antisense[escaper_vec, ]),
+                             pos_vec, 'escaper'),
+                        cbind(colMedians(ttseq_antisense[ilad_vec, ]),
+                              pos_vec, 'iLAD'))
+
+
+antisense_data = rbind(cbind(proseq_antisense_mean, 'PRO-seq'),
+                       cbind(ttseq_antisense_mean, 'TT-seq'))
+
+mean_data = rbind(cbind(sense_data, 'sense'),
+                  cbind(antisense_data, 'anti-sense'))
+mean_data = as.data.frame(mean_data, stringsAsFactors=F)
+
+colnames(mean_data) = c('value', 'pos', 'class', 'experiment', 'direction')
+mean_data$value = as.numeric(mean_data$value)
+mean_data$pos = as.numeric(mean_data$pos)
+
+relative_data = ddply(mean_data, .(experiment),
+                      function(x){
+                          x$value = x$value / max(x$value);
+                          return(x)
+                      })
+
+
+```
+
+```{r figure4b.2, fig.width=10, fig.height=20, echo=FALSE}
+
+
+ggplot(relative_data, aes(x=pos, y=value, color=class,
+                          linetype=direction)) +
+    geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
+    geom_line() +
+    facet_wrap(~experiment+class, ncol=2) +
+    theme_bw() +
+    scale_linetype_manual(values = c(2,1)) +
+    scale_color_manual(values=COL_class)
+
+
+```
+
+**figure4b:**
+
+Transcriptional activity around transcription start site (TSS).
+TTseq and PROseq data clearly confirms previous finding. In addition there is
+more general transcriptional activity around iLAD promoter.
+
+```{r figure4c, fig.width=10, fig.height=10, echo=FALSE}
+
+
+rnaseq_rep1 = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/K562_rna_rep2_ENCFF222NCB.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+
+transcript_table = read.table('../raw_data/K562_rna_rep1_transcripts_ENCFF853QUL.tsv',
+                               header=T, row.names=1, stringsAsFactors=F)
+
+p_match = transcript_table[P$name, 'gene_id']
+
+fpkm_rep1 = rnaseq_rep1[p_match, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[p_match, 'pme_FPKM']
+
+fpkm = rowMeans(cbind(fpkm_rep1, fpkm_rep2))
+P$K562_fpkm = pseudo_log10(fpkm)
+
+p_matched = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
+                     'class_GROcap', 'escaper', 'GROcap_K562')
+ggplot(p_matched, aes(x=class_GROcap, y=K562_fpkm, color=class_GROcap_n)) +
+    geom_violin(alpha=0.5) +
+    geom_point(size=0.5, alpha=0.5, position=position_jitter(width=0.5)) +
+    theme_bw() +
+    scale_color_manual(values = COL_class_GROcap_n)
+
+```
+**figure4c:**
+Pme adjusted FPKM values from ENCODE RNA-seq on K562 (ENCSR000CPH). Poly-A
+selected RNA-seq expression from genes of escaper promoters were compared to a
+matching set of iLAD promoters based on GROcap expression. Despite similar
+GROcap activity of the promoter, full-length transcripts are less abundant.
+
+
+##Figure 5 / table 1
+
+In order to examine what factors are responsible for overruling the surrounding
+heterochromatin and keep escaper promoters extruded from the lamina, we looked
+into transcription factor binding affinity of these promoters.
+
+Possibly escaper promoters are controlled by a specific subset of transcription
+factors able to overrule lamina association, or they could have a higher affinity
+for activating transcription factors in general.
+
+
+```{r table1, echo=FALSE}
+
+wilcox_affinity <- function(x_affinity, y_affinity, groups, tf_table, id_vec=NULL){
+  if (is.null(id_vec)){
+    id_vec = colnames(x_affinity)
+  }  
+  fit = mclapply(id_vec, function(id){
+    x = x_affinity[,id]
+    y = y_affinity[,id]
+    r = rank(c(x,y))
+    r_x = r[1:length(x)]
+    r_y = r[-(1:length(x))]
+    mean_r = c(mean(r_x), mean(r_y))
+    direction = groups[which(mean_r==max(mean_r))]
+    if (length(direction) == 2){
+      direction = 'unchanged'
+    }
+    median_fc = median(x) / median(y)
+    mean_fc = mean(x) / mean(y)
+    rank_fc = mean_r[1] / mean_r[2]
+    if (length(which(x==0))/length(x)>0.3 &
+        length(which(y==0))/length(y)>0.3){
+      w = chisq.test(rbind(table(x==0), table(y==0)))
+    } else {
+      w = wilcox.test(x, y)
+    }
+    return(list(w,direction, median_fc, mean_fc, rank_fc))
+  })
+  p_vec = unlist(lapply(fit, function(x){ x[[1]]$p.value}))
+  p_adjust = p.adjust(p_vec, method='fdr')
+  direction = lapply(fit, function(x){ x[[2]]})
+  median_fc =  lapply(fit, function(x){ x[[3]]})
+  mean_fc =  lapply(fit, function(x){ x[[4]]})
+  rank_fc =  lapply(fit, function(x){ x[[5]]})
+  result_table = cbind(id=id_vec,
+                       tf_table[id_vec, ],
+                       direction=unlist(direction),
+                       p_adjust = p_adjust,
+                       median_fc = unlist(median_fc),
+                       mean_fc = unlist(mean_fc),
+                       rank_fc = unlist(rank_fc), stringsAsFactors=F)
+  return(result_table)
+}
+
+aff_table_jaspar = read.table('../raw_data/jaspar_affinity_pseudo/seq_psam.dat',
+                              stringsAsFactors=F)
+tf_table = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1,
+                      stringsAsFactors=F)
+colnames(tf_table) = c('name', 'species', 'class', 'family')
+
+tf_translation = ddply(tf_table[,c('species','name')], .(name),
+                       function(x){
+                         symbol = gsub('[(]var.[0-9][)]','', x[,2])
+                         cbind(x,symbol=unlist(strsplit(symbol, '::')))
+                       })
+tf_translation$symbol = as.character(tf_translation$symbol)
+
+find_symbol <- function(symbol, id_table){
+    result = id_table[which(id_table$symbol==toupper(symbol)),'gene_id']
+    if (length(result) == 0){
+        result = NA
+    } else {
+        table = table(result)
+        result = names(which.max(table))
+    }
+    return(result)
+}
+
+
+tf_translation$gene_id = unlist(lapply(tf_translation$symbol, find_symbol,
+                                       id_table))
+
+fpkm_rep1 = rnaseq_rep1[tf_translation$gene_id, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[tf_translation$gene_id, 'pme_FPKM']
+
+
+tf_translation$K562_fpkm = pseudo_log10(rowMeans(cbind(fpkm_rep1, fpkm_rep2)))
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+ens_vec = gsub('[.].*','',tf_translation$gene_id)
+tf_translation$KBM7_essential = KBM7_essential[ens_vec, 'selected']=='YES'
+tf_translation$HAP1_essential = HAP1_essential[ens_vec, 'selected']=='YES'
+
+tf_expression = ddply(tf_translation,.(name),
+                      function(x){
+                          c(expression=min(x$K562_fpkm),
+                            KBM7_essential=any(x$KBM7_essential),
+                            HAP1_essential=any(x$HAP1_essential))
+                      })
+
+
+tf_table$K562_fpkm = NaN
+tf_match = match(tf_expression$name, tf_table$name)
+tf_table$K562_fpkm[tf_match] = tf_expression$expression
+tf_table$KBM7_essential = NA
+tf_table$KBM7_essential[tf_match] = tf_expression$KBM7_essential
+tf_table$HAP1_essential = NA
+tf_table$HAP1_essential[tf_match] = tf_expression$HAP1_essential
+
+
+tf_type = read.table('../raw_data/12859_2016_1349_MOESM2_ESM.csv',
+                     sep='\t', header=T, stringsAsFactors=F)
+match_vec = match(toupper(tf_table$name), tf_type$Symbol)
+tf_table$tf_type = NA
+not_na = !is.na(match_vec)
+tf_table[not_na, 'tf_type'] = tf_type[match_vec[not_na],
+                                      'Chromatin.Opening.Type']
+
+colnames(aff_table_jaspar) = gsub('.xml','', colnames(aff_table_jaspar))
+rownames(aff_table_jaspar) = gsub('::.*','', rownames(aff_table_jaspar))
+
+id_vec = rownames(tf_table)
+id_vec = id_vec[-grep('MA9999.9', id_vec)]
+
+
+
+
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+
+e_index = which(matched_evsr$class_GROcap=='escaper')
+escaper_affinity_m = aff_table_jaspar[matched_evsr[e_index,'name'], ]
+repressed_affinity_m = aff_table_jaspar[matched_evsr[-e_index,'name'], ]
+evsr_jaspar_m = wilcox_affinity(escaper_affinity_m, repressed_affinity_m,
+                                c('escaper', 'repressed'), tf_table,
+                                id_vec)
+
+
+
+load('../raw_data/cl20170814_jaspar_gencode_cage_cor.rda')
+cor_data = t(cor_data)
+colnames(cor_data) = rownames(tf_table)[match(colnames(cor_data), tf_table$name)]
+
+escaper_exp = cor_data[matched_evsr[e_index,'name'], ]
+repressed_exp = cor_data[matched_evsr[-e_index,'name'], ]
+evsr_jaspar_exp = wilcox_affinity(escaper_exp, repressed_exp,
+                                  c('escaper', 'repressed'), tf_table)
+
+evsr_jaspar_m$p_cage = evsr_jaspar_exp[rownames(evsr_jaspar_m), 'p_adjust']
+evsr_jaspar_m$rank_fc_cage = evsr_jaspar_exp[rownames(evsr_jaspar_m), 'rank_fc']
+
+aff_table_enhancer = read.table('../raw_data/jaspar_affinity_enhancers/seq_psam.dat',
+                                stringsAsFactors=F)
+colnames(aff_table_enhancer) = gsub('.xml','', colnames(aff_table_enhancer))  
+rownames(aff_table_enhancer) = gsub('::.*','', rownames(aff_table_enhancer))                      
+
+
+matched_enhancer = matchSet(P_enh[P_enh$class%in%c('repressed', 'escaper'), ],
+                            'class', 'escaper', 'SuRE')
+e_index = which(matched_enhancer$class=='escaper')
+escaper_affinity_enh = aff_table_enhancer[rownames(matched_enhancer)[e_index], ]
+repressed_affinity_enh = aff_table_enhancer[rownames(matched_enhancer)[-e_index], ]
+evsr_jaspar_enh = wilcox_affinity(escaper_affinity_enh, repressed_affinity_enh,
+                                c('escaper', 'repressed'), tf_table,
+                                id_vec)
+evsr_jaspar_m$p_enh = evsr_jaspar_enh[rownames(evsr_jaspar_m), 'p_adjust']
+evsr_jaspar_m$rank_fc_enh = evsr_jaspar_enh[rownames(evsr_jaspar_m), 'rank_fc']
+
+write.table(evsr_jaspar_m, sep='\t',row.names=F,
+            file='cl20170814_evsr_aff_jaspar_all_matched.txt')
+
+evsr_jaspar_sig_m = evsr_jaspar_m[which(evsr_jaspar_m$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_m$direction=='repressed',
+                                               evsr_jaspar_m$mean_fc < 1,
+                                               evsr_jaspar_m$mean_fc > 1) &
+                                        evsr_jaspar_m$K562_fpkm > 0), ]
+rank_order = order(evsr_jaspar_sig_m$rank_fc)
+kable(evsr_jaspar_sig_m[rank_order, c('name', 'class', 'tf_type',
+                                      'p_adjust', 'rank_fc',
+                                      'p_cage', 'rank_fc_cage',
+                                      'p_enh', 'rank_fc_enh')], row.names=F)
+
+write.table(evsr_jaspar_sig_m[rank_order,], sep='\t',row.names=F,
+          file='cl20170814_evsr_aff_jaspar_sig_matched.txt')
+
+```
+**table 1:**
+
+For each promoter I calculated, for each jaspar motif, the sum of affinity over
+300 bp up and downstream of the TSS. For a set of all escapers and a set of
+repressed promoters matched on SuRE activity we used wilcoxon test to find out
+whether either group had a significantly higher rank than the other. Depicted
+in table 1 is the subset of promoters that show, after multiple error adjustment,
+a significant p-value and in addition show a log10 fpkm > 0 and have a mean
+fold change in the same direction as the rank fold change.
+
+What can be seen from this table is that there's no large differences.
+
+Table 1 shows a subset of transcription factors with significant rank differences
+between escapers and repressed promoters.
+
+```{r, figure5, fig.width=10, fig.height=10}
+evsr_jaspar_m$color = ifelse(evsr_jaspar_m$p_adjust < 0.05 &
+                             ifelse(evsr_jaspar_m$direction=='repressed',
+                                    evsr_jaspar_m$mean_fc < 1,
+                                    evsr_jaspar_m$mean_fc > 1) &
+                             evsr_jaspar_m$K562_fpkm > 0,
+                             evsr_jaspar_m$direction,
+                             'boundary')
+evsr_jaspar_m$x = tolower(evsr_jaspar_m$tf_type)
+evsr_jaspar_m$x[is.na(evsr_jaspar_m$x)] = ''
+ggplot(evsr_jaspar_m, aes(x=tolower(tf_type), y=rank_fc, color=color)) +
+    geom_violin(color='black') +
+    geom_point(position=position_jitter(width=0.3)) +
+    scale_color_manual(values= COL_class)
+
+
+ggplot(evsr_jaspar_m, aes(x=tolower(tf_type), y=rank_fc_cage, color=color)) +
+    geom_violin(color='black') +
+    geom_point(position=position_jitter(width=0.3)) +
+    scale_color_manual(values= COL_class)
+
+ggplot(evsr_jaspar_m, aes(x=tolower(tf_type), y=rank_fc_enh, color=color)) +
+    geom_violin(color='black') +
+    geom_point(position=position_jitter(width=0.3)) +
+    scale_color_manual(values= COL_class)
+```
+
+**figure 5:**
+we are looking at marginal differences in rank of motif affinity for
+escaper factors. But escaper promoters tend to have a higher affinity for
+transcription factors in general, except for the negative migrant type of
+transcription factor and in particular pioneering transcription factors.
+This holds true for enhancers and expression correlation as well.
+
+```{r, echo=FALSE}
+cage_quant = quantile(evsr_jaspar_m$rank_fc_cage, na.rm=T,c(0.25, 0.75))
+enh_quant = quantile(evsr_jaspar_m$rank_fc_enh, na.rm=T,c(0.25, 0.75))
+
+selection = which(evsr_jaspar_m$p_adjust < 0.05 &
+                  ifelse(evsr_jaspar_m$direction=='repressed',
+                         evsr_jaspar_m$mean_fc < 1 &
+                             evsr_jaspar_m$rank_fc_cage < cage_quant[1] &
+                             evsr_jaspar_m$rank_fc_enh < enh_quant[1],
+                         evsr_jaspar_m$mean_fc > 1 &
+                             evsr_jaspar_m$rank_fc_cage > cage_quant[2] &
+                             evsr_jaspar_m$rank_fc_enh > enh_quant[2]) &
+                  evsr_jaspar_m$K562_fpkm > 0)
+evsr_jaspar_sig_m = evsr_jaspar_m[selection, ]
+
+rank_order = order(evsr_jaspar_sig_m$rank_fc)
+kable(evsr_jaspar_sig_m[rank_order, c('name', 'class', 'tf_type',
+                                      'p_adjust', 'rank_fc',
+                                      'p_cage', 'rank_fc_cage',
+                                      'p_enh', 'rank_fc_enh')], row.names=F)
+
+kable(evsr_jaspar_sig_m[rank_order, c('name', 'class', 'tf_type',
+                                    'KBM7_essential', 'HAP1_essential')], row.names=F)
+
+
+
+```
+**alternative table 1:**
+
+To further select a subset of transcription factors specific for either escaper or
+repressed promoters I selected for expression correlation and affinity enrichment
+for enhancers. For escaper transcription factors I require them to have a rank
+fold-change in the upper quartiles of both expression correlation values and
+enhancer affinities. For repressed transcription factors I require them to be
+in the lower quartiles.
+
+```{r}
+matched_evsi = matchSet(P[P$class_GROcap%in%c('iLAD', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+
+e_index = which(matched_evsi$class_GROcap=='escaper')
+escaper_affinity_m = aff_table_jaspar[matched_evsi[e_index,'name'], ]
+ilad_affinity_m = aff_table_jaspar[matched_evsi[-e_index,'name'], ]
+evsi_jaspar_m = wilcox_affinity(escaper_affinity_m, ilad_affinity_m,
+                                c('escaper', 'iLAD'), tf_table,
+                                id_vec)
+evsr_jaspar_m$p_ilad = evsi_jaspar_m[rownames(evsr_jaspar_m), 'p_adjust']
+evsr_jaspar_m$rank_fc_ilad = evsi_jaspar_m[rownames(evsr_jaspar_m), 'rank_fc']
+evsr_jaspar_m$color = 'boundary'
+evsr_jaspar_m$color[selection] = evsr_jaspar_m$direction[selection]
+
+
+ggplot(evsr_jaspar_m, aes(x=tolower(tf_type), y=rank_fc_ilad, color=color)) +
+    geom_violin(color='black') +
+    geom_point(position=position_jitter(width=0.3)) +
+    scale_color_manual(values= COL_class)
+evsr_jaspar_sig_m = evsr_jaspar_m[selection, ]
+rank_order = order(evsr_jaspar_sig_m$rank_fc_ilad)
+kable(evsr_jaspar_sig_m[rank_order, c('name', 'class', 'tf_type',
+                                      'p_ilad', 'rank_fc_ilad')], row.names=F)
+```
+
+**table2/some plot:**
+
+If we now compare affinities to iLAD promoters, we see the negative migrant group
+of transcription factors more enriched in escapers and more pioneer factors enriched in
+iLADs. From our previous selection of transcription factors, none are significantly enriched in
+escaper in this comparison and some are even enriched in iLADs.
+
+
+
+```{r figure6, fig.width=10, fig.height=10, echo=FALSE}
+p_most_active = ddply(P, .(gene_id), function(x){
+    if (nrow(x)==1){
+        result = x[1,]
+    } else {
+        result = x[order(x$SuRE_K562, decreasing=T)[1],]
+    }
+    return(result)
+  })
+
+
+CREB_kd = read.table('../raw_data/GSE12056_CREB_KD_raw/file_list.txt', stringsAsFactors=F)
+
+ab = ReadAffy(filenames=paste0('../raw_data/GSE12056_CREB_KD_raw/', CREB_kd[,1]))
+## somehow in this version gcrma broke down, probably to do with package dependency not being
+## at the right version.
+# eset = gcrma(ab)
+eset = rma(ab)
+
+design <- cbind(WT=1, MUvsWT=CREB_kd[,2]=="CREB_Knock-out")
+fit <- lmFit(eset, design)
+fit <- eBayes(fit)
+topTable(fit, coef="MUvsWT")
+
+humanMart = useMart(biomart = 'ensembl', dataset = 'hsapiens_gene_ensembl')
+bm_eg = getBM(attributes=c('affy_hg_u133_plus_2','ensembl_gene_id','hgnc_symbol'),
+              filters='affy_hg_u133_plus_2', values=rownames(fit$coefficients), mart=humanMart)
+
+ens_match = match(bm_eg$ensembl_gene_id, gsub('[.].*', '', p_most_active$gene_id))
+
+bm_vec = bm_eg$affy_hg_u133_plus_2[!is.na(ens_match)]
+
+p_kd = p_most_active[ens_match[!is.na(ens_match)], ]
+
+
+coefficients = data.frame(log_fc = fit$coefficients[bm_vec, 'MUvsWT'],
+                          class = p_kd$class_GROcap,
+                          affinity = rank(aff_table_jaspar[p_kd$name, 'MA0018.2']),
+                          SuRE = p_kd$SuRE_K562)
+coef_matched = matchSet(coefficients[coefficients$class%in%c('escaper', 'iLAD'), ],
+                        'class', 'escaper', 'SuRE')
+
+new_levels = levels(coef_matched$class)
+names(new_levels) = levels(coef_matched$class)
+for (class in levels(coef_matched$class)){
+    x = coef_matched$log_fc[which(coef_matched$class==class)]
+    y = coef_matched$affinity[which(coef_matched$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coef_matched$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coef_matched$log_fc, coef_matched$affinity)
+title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched on SuRE expression',
+              round(cor,3))
+ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.5,size=0.5) +
+      stat_smooth() +
+      theme_bw() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+
+coef_matched = matchSet(coefficients[coefficients$class%in%c('escaper', 'repressed'), ],
+                        'class', 'escaper', 'SuRE')
+
+new_levels = levels(coef_matched$class)
+names(new_levels) = levels(coef_matched$class)
+for (class in levels(coef_matched$class)){
+  x = coef_matched$log_fc[which(coef_matched$class==class)]
+  y = coef_matched$affinity[which(coef_matched$class==class)]
+  not_na = !is.na(x) & !is.na(y)
+  cor = cor(x[not_na],y[not_na])
+  new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coef_matched$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coef_matched$log_fc, coef_matched$affinity)
+title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched on SuRE expression',
+              round(cor,3))
+ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
+    geom_point(alpha=0.5,size=0.5) +
+    stat_smooth() +
+    theme_bw() +
+    ggtitle(title) +
+    scale_color_manual(values=col_vec) +
+    facet_wrap(~class)
+```
+
+**figure6:**
+
+_COMMENT:this clearly needs some rephrasing_
+Knockdown of CREB1 down-regulates escaper promoters with high affinity more
+than any other class of promoter with high affinity for CREB1. This agrees with
+previous finding that CREB1 has higher affinity with escaper promoters.
+
+```{r figure6.2, fig.width=10, fig.height=10, echo=FALSE}
+
+coef_matched = matchSet(coefficients[coefficients$class%in%c('escaper', 'iLAD'), ],
+                        'class', 'escaper', 'affinity')
+
+new_levels = levels(coef_matched$class)
+names(new_levels) = levels(coef_matched$class)
+for (class in levels(coef_matched$class)){
+    x = coef_matched$log_fc[which(coef_matched$class==class)]
+    y = coef_matched$affinity[which(coef_matched$class==class)]
+    not_na = !is.na(x) & !is.na(y)
+    cor = cor(x[not_na],y[not_na])
+    new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coef_matched$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coef_matched$log_fc, coef_matched$affinity)
+title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched on affinity',
+              round(cor,3))
+ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
+      geom_point(alpha=0.5,size=0.5) +
+      stat_smooth() +
+      theme_bw() +
+      ggtitle(title) +
+      scale_color_manual(values=col_vec) +
+      facet_wrap(~class)
+
+
+coef_matched = matchSet(coefficients[coefficients$class%in%c('escaper', 'repressed'), ],
+                        'class', 'escaper', 'SuRE')
+
+new_levels = levels(coef_matched$class)
+names(new_levels) = levels(coef_matched$class)
+for (class in levels(coef_matched$class)){
+  x = coef_matched$log_fc[which(coef_matched$class==class)]
+  y = coef_matched$affinity[which(coef_matched$class==class)]
+  not_na = !is.na(x) & !is.na(y)
+  cor = cor(x[not_na],y[not_na])
+  new_levels[class] = paste(class, round(cor,4), sep=';')
+}
+levels(coef_matched$class) = new_levels
+col_vec = COL_class[names(new_levels)]
+names(col_vec) = new_levels
+cor = cor(coef_matched$log_fc, coef_matched$affinity)
+title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched on affinity',
+              round(cor,3))
+ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
+    geom_point(alpha=0.5,size=0.5) +
+    stat_smooth() +
+    theme_bw() +
+    ggtitle(title) +
+    scale_color_manual(values=col_vec) +
+    facet_wrap(~class)
+```
+
+
+
+```{r suplement1.1, echo=FALSE}
+
+## PRO-seq
+proseq_plus_tes = read.table('../raw_data/GSM1480327_K562_PROseq_plus_tes.txt.gz',
+                             sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+proseq_minus_tes = read.table('../raw_data/GSM1480327_K562_PROseq_minus_tes.txt.gz',
+                              sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+strand_vec = which(proseq_plus_tes[,5]=='+')
+proseq_range = 6:ncol(proseq_plus_tes)
+proseq_sense = rbind(proseq_plus_tes[strand_vec, proseq_range],
+                     proseq_minus_tes[-strand_vec, proseq_range] * -1)
+proseq_antisense = rbind(proseq_plus_tes[-strand_vec, proseq_range] * -1,
+                         proseq_minus_tes[strand_vec, proseq_range])
+
+
+##POL2-ChIP
+POL2_tes_table = read.table('../raw_data/POL2A_K562_hg38_tes.txt.gz', sep='\t',
+                            skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes = POL2_tes_table[,6:ncol(POL2_tes_table)]
+POL2_tes[POL2_tes_table$strand=='-', ] = POL2_tes[POL2_tes_table$strand=='-', ncol(POL2_tes):1]
+
+##TT-seq
+ttseq_plus_tes_rep1 = read.table('../raw_data/TTseq_K562_rep1_plus_hg38_tes.txt.gz',
+                                 sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+ttseq_plus_tes_rep2 = read.table('../raw_data/TTseq_K562_rep2_plus_hg38_tes.txt.gz',
+                                 sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+ttseq_plus_tes = ttseq_plus_tes_rep1[,6:ncol(ttseq_plus_tes_rep1)] +
+                 ttseq_plus_tes_rep2[,6:ncol(ttseq_plus_tes_rep2)]
+
+
+ttseq_minus_tes_rep1 = read.table('../raw_data/TTseq_K562_rep1_minus_hg38_tes.txt.gz',
+                                  sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+ttseq_minus_tes_rep2 = read.table('../raw_data/TTseq_K562_rep2_minus_hg38_tes.txt.gz',
+                                  sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+
+ttseq_minus_tes = ttseq_minus_tes_rep1[,6:ncol(ttseq_minus_tes_rep1)] +
+                  ttseq_minus_tes_rep2[,6:ncol(ttseq_minus_tes_rep2)]
+
+strand_vec = which(ttseq_plus_tes_rep1[,5]=='+')
+ttseq_sense = rbind(ttseq_plus_tes[strand_vec, ],
+                    ttseq_minus_tes[-strand_vec, ])
+ttseq_antisense = rbind(ttseq_plus_tes[-strand_vec, ] * -1,
+                        ttseq_minus_tes[strand_vec, ] * -1)
+
+
+
+pos_vec = -110:109 * 200
+
+
+## all our escapers and iLADs in this subset are in all tables
+proseq_sense_mean = rbind(cbind(colMeans(proseq_sense[escaper_vec, ], na.rm=T),
+                               pos_vec, 'escaper'),
+                         cbind(colMeans(proseq_sense[ilad_vec, ], na.rm=T),
+                               pos_vec, 'iLAD'))
+
+POL2_mean = rbind(cbind(colMeans(POL2_tes[escaper_vec, ]), pos_vec, 'escaper'),
+                 cbind(colMeans(POL2_tes[ilad_vec, ]), pos_vec, 'iLAD'))
+
+
+
+ttseq_sense_mean = rbind(cbind(colMeans(ttseq_sense[escaper_vec, ]),
+                              pos_vec, 'escaper'),
+                         cbind(colMeans(ttseq_sense[ilad_vec, ]),
+                               pos_vec, 'iLAD'))
+
+
+sense_data = rbind(cbind(proseq_sense_mean, 'PRO-seq'),
+                   cbind(POL2_mean, 'POL2A-ChIP'),
+                   cbind(ttseq_sense_mean, 'TT-seq'))
+
+
+
+proseq_antisense_mean = rbind(cbind(colMeans(proseq_antisense[escaper_vec, ], na.rm=T),
+                              pos_vec, 'escaper'),
+                        cbind(colMeans(proseq_antisense[ilad_vec, ], na.rm=T),
+                              pos_vec, 'iLAD'))
+
+
+
+ttseq_antisense_mean = rbind(cbind(colMeans(ttseq_antisense[escaper_vec, ]),
+                             pos_vec, 'escaper'),
+                        cbind(colMeans(ttseq_antisense[ilad_vec, ]),
+                              pos_vec, 'iLAD'))
+
+
+antisense_data = rbind(cbind(proseq_antisense_mean, 'PRO-seq'),
+                       cbind(ttseq_antisense_mean, 'TT-seq'))
+
+mean_data = rbind(cbind(sense_data, 'sense'),
+                  cbind(antisense_data, 'anti-sense'))
+mean_data = as.data.frame(mean_data, stringsAsFactors=F)
+
+colnames(mean_data) = c('value', 'pos', 'class', 'experiment', 'direction')
+mean_data$value = as.numeric(mean_data$value)
+mean_data$pos = as.numeric(mean_data$pos)
+
+relative_data = ddply(mean_data, .(experiment),
+                      function(x){
+                          x$value = x$value / max(x$value);
+                          return(x)
+                      })
+
+
+```
+
+```{r suplement1.2, fig.width=10, fig.height=10, echo=FALSE}
+
+
+ggplot(relative_data, aes(x=pos, y=value, color=experiment,
+                          linetype=direction)) +
+    geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
+    geom_line() +
+    facet_wrap(~class) +
+    theme_bw() +
+    scale_linetype_manual(values = c(2,1))
+
+
+```
+
+**Supplementary figure1:**
+
+Transcriptional activity around transcription end site (TES).
+In iLADs there is a "queue" of transcripts at the TES, this signal for escapers
+is very weak in comparison. This is probably due to lower transcription rates.
+
+
+```{r suplement2, fig.width=10, fig.height=10, echo=FALSE}
+
+time_vec = c('G1', 'S1', 'S2', 'S3', 'S4', 'G2')
+
+time_list = lapply(time_vec, function(x, file_list){
+        name = grep(x, file_list, value=T)
+        read.table(name, sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+    },  list.files('../raw_data', pattern='RepliSeq', full.names=T))
+
+names(time_list) = time_vec
+
+mean_list = lapply(c(names(COL), 'iLAD'), function(class, time_list, P, pos_vec){
+        result_list = lapply(names(time_list), function(y, class, P, pos_vec){
+                data = time_list[[y]]
+                sub_data = data[P[P$class_GROcap==class, 'name'], 6:ncol(data)]
+                as.vector(colMeans(sub_data))
+            }, class, P, pos_vec)
+        result_matrix = do.call(cbind, result_list)
+        result = t(apply(result_matrix,1,function(x){x = x / max(x)}))
+        colnames(result) = names(time_list)
+        result_melt = melt(cbind.data.frame(result, pos_vec),
+                           id.vars=c('pos_vec'))
+        result_melt$class = class
+        return(result_melt)
+    }, time_list, P, pos_vec)
+
+mean_data = do.call(rbind.data.frame, mean_list)
+mean_data$class = factor(mean_data$class, levels=c('iLAD', 'escaper', 'repressed',
+                                                   'inactive'))
+
+p1 = ggplot(mean_data, aes(x=pos_vec, y=variable, fill=value)) +
+    geom_tile() + facet_wrap(~class, nrow=1) +
+    scale_fill_gradient(high='black', low='white')
+
+dummy = ggplot(mean_data, aes(x=pos_vec, y=variable, fill=class)) +
+            facet_wrap(~class, nrow=1) +
+            geom_rect(xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+            theme_minimal() +
+            scale_fill_manual(values=COL_class)
+
+g1 <- ggplotGrob(p1)
+g2 <- ggplotGrob(dummy)
+
+gtable_select <- function (x, ...)
+{
+  matches <- c(...)
+  x$layout <- x$layout[matches, , drop = FALSE]
+  x$grobs <- x$grobs[matches]
+  x
+}
+
+panels <- grepl(pattern="panel", g2$layout$name)
+strips <- grepl(pattern="strip-t", g2$layout$name)
+g2$layout$t[panels] <- g2$layout$t[panels] - 1
+g2$layout$b[panels] <- g2$layout$b[panels] - 1
+
+new_strips <- gtable_select(g2, panels | strips)
+grid.newpage()
+grid.draw(new_strips)
+
+gtable_stack <- function(g1, g2){
+  g1$grobs <- c(g1$grobs, g2$grobs)
+  g1$layout <- transform(g1$layout, z= z-max(z), name="g2")
+  g1$layout <- rbind(g1$layout, g2$layout)
+  g1
+}
+## ideally you'd remove the old strips, for now they're just covered
+new_plot <- gtable_stack(g1, new_strips)
+grid.newpage()
+grid.draw(new_plot)
+
+```
+
+**supplementary 2:**
+
+While all classes of LAD promoters are late replicating, there are some small
+differences in timing. While escapers seem to be replicating a bit more early,
+repressed promoters seem to be replicating later than inactive promoters.
+
+
+```shell
+## create transcription start site (TSS) file and transcription end site(TES) file
+gunzip -c /DATA/usr/c.leemans/data/tracks/hg19/gencode.v19.annotation.gff3.gz | \
+    perl -lane \
+         'if ($F[2] eq "transcript"){
+            $F[8] =~ /ID=([A-Z.0-9]*);Parent=([A-Z.0-9]*)/;
+            my $line = join "\t", $1, $2;
+            if ($F[8] =~ /gene_name=([^;]*);/){
+                $line = join "\t", $line, $1;
+            } else {
+                $line = join "\t", $line, "NA";
+            }
+            print $line;
+        }' > raw_data/transcript.table
+```
+
+
+```shell
+## create transcription start site (TSS) file and transcription end site(TES) file
+gunzip -c /DATA/usr/c.leemans/data/tracks/hg19/gencode.v19.annotation.gff3.gz | \
+    perl -lane \
+         'if ($F[2] eq "transcript"){
+            $F[8] =~ /ID=([A-Z.0-9]*);/;
+            my $transcript = join "\t", "$F[0]", $F[3], $F[4] , $1, ".", $F[6];
+            print $transcript;
+        }' > raw_data/transcripts_hg19.bed
+```
+
+```r
+library(rtracklayer)
+
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+bed = import.bed("raw_data/transcripts_hg19.bed")
+bed = bed[which(bed$name%in%gencode.sure.170712$name)]
+score(bed) = 0
+table = table[which(table[,1]%in%gencode.sure.170712$name), ]
+export.bed(bed, 'raw_data/transcripts_hg19.bed')
+```
+
+```shell
+liftOver raw_data/transcripts_hg19.bed \
+    /DATA/usr/c.leemans/data/hg19ToHg38.over.chain.gz \
+    raw_data/transcripts_hg38.bed raw_data/leftover.txt
+
+
+## we know which regions we are interested in, so loading the complete
+## bigwig into memory in R is not necessary
+## Because liftOver can be messy, let's lift over the tss's since this is the
+## smallest information
+for ttseq in $(ls ~/mydata/data/tracks/hg38/TTseq_K562_rep*)
+do
+    ttseq_name=$(basename "${ttseq%.*}")
+    out_tss=raw_data/$ttseq_name"_tss.txt.gz"
+    out_tes=raw_data/$ttseq_name"_tes.txt.gz"
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg38.bed \
+                                           -S $ttseq  \
+                                           --referencePoint TSS \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 10 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tss
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg38.bed \
+                                           -S $ttseq  \
+                                           --referencePoint TES \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 10 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tes
+done
+
+## there are some genes which are skipped. These were moved from hg19 main genome to
+## contigs or chromosome Y on the hg38 genome.
+
+for proseq in $(ls ~/mydata/data/tracks/hg19/*PROseq*)
+do
+    proseq_name=$(basename "${proseq%.*}")
+    out_tss=raw_data/$proseq_name"_tss.txt.gz"
+    out_tes=raw_data/$proseq_name"_tes.txt.gz"
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                           -S $proseq  \
+                                           --referencePoint TSS \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 10 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tss
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                           -S $proseq  \
+                                           --referencePoint TES \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 10 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tes
+done
+
+
+
+POL=~/mydata/data/tracks/hg38/POL2A_K562_ENCFF042CRO.bigWig
+nice -19 computeMatrix reference-point -R raw_data/transcripts_hg38.bed \
+                                       -S $POL \
+                                       --referencePoint TSS \
+                                       -a 22000 -b 22000 \
+                                       --binSize=200 -p 10 \
+                                       --averageTypeBins sum \
+                                       --missingDataAsZero \
+                                       --outFileName raw_data/POL2A_K562_hg38_tss.txt.gz
+
+nice -19 computeMatrix reference-point -R raw_data/transcripts_hg38.bed \
+                                      -S $POL \
+                                      --referencePoint TES \
+                                      -a 22000 -b 22000 \
+                                      --binSize=200 -p 10 \
+                                      --averageTypeBins sum \
+                                      --missingDataAsZero \
+                                      --outFileName raw_data/POL2A_K562_hg38_tes.txt.gz
+
+
+for repli in $(ls ~/mydata/data/tracks/hg19/Repliseq_K562_GSM923448/*.bam)
+do
+    repli_name=$(basename "${repli%.*}")
+    repli_bw="${repli%.*}".bw
+    bamCoverage --bam $repli \
+                --normalizeTo1x 2451960000 \
+                --outFileName $repli_bw \
+                --outFileFormat bigwig
+    out_tss=raw_data/$repli_name"_tss.txt.gz"
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                        -S $repli_bw \
+                                        --referencePoint TSS \
+                                        -a 22000 -b 22000 \
+                                        --binSize=200 -p 10 \
+                                        --averageTypeBins sum \
+                                        --missingDataAsZero \
+                                        --outFileName $out_tss
+done
+
+NELF=~/mydata/data/tracks/hg19/NELFE_K562_signal_ENCFF000YUI.bigWig
+## Now for NELFE
+nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                       -S $NELF \
+                                       --referencePoint TSS \
+                                       -a 500 -b 500 \
+                                       --binSize=20 -p 10 \
+                                       --averageTypeBins sum \
+                                       --missingDataAsZero \
+                                       --outFileName raw_data/nelfe_tss.txt.gz
+
+bwtool summary -header -skip-median -with-sum -keep-bed \
+               <(awk -vOFS='\t' '{
+                         if ($6=="+"){
+                             print $1, $2 - 500, $2 + 500, $4, $5, $6
+                         } else {
+                             print $1, $3 - 500, $3 + 500, $4, $5, $6
+                         }
+                     }' raw_data/transcripts_hg19.bed) \
+               $NELF /dev/stdout | gzip -c > raw_data/nelfe_tss.count.txt.gz
+## there are some genes on chromome Y which are not processed since it's missing
+## in the NELFE data.
+```
+
+```r
+pdf('cl320170803_NELFE.pdf')
+nelf_table = read.table('../raw_data/nelfe_tss.txt.gz', sep='\t', skip=1,
+                        stringsAsFactors=T, row.names=4)
+
+nelf_class = P[rownames(nelf_table), 'class_GROcap']
+
+means = aggregate(nelf_table[,6:ncol(nelf_table)], by=list(nelf_class),
+                  FUN=mean)
+colnames(means)[2:ncol(means)] = -25:24 * 20
+
+mean_melt = melt(means)
+mean_melt$variable = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt[which(mean_melt$Group.1!='boundary'), ],
+       aes(x=variable, y=value, color=Group.1)) +
+       ggtitle('NELFE CHiP signal around TSS') +
+       xlab('class') +
+       ylab('mean NELFE signal') +
+       theme_bw() +
+       geom_line() +
+       scale_color_manual(values=COL_class)
+
+
+nelf_count = read.table('../raw_data/nelfe_tss.count.txt.gz', sep='\t',
+                        stringsAsFactors=T, row.names=4)
+colnames(nelf_count) = c('chrom', 'start', 'end', 'score', 'strand', 'size',
+                          'num_data', 'min', 'max', 'mean', 'sum')
+P$NELFE = NaN
+P[rownames(nelf_count), 'NELFE'] = pseudo_log10(nelf_count$sum)
+
+p_lad = P[P$class_GROcap%in%c('escaper', 'repressed', 'inactive'), ]
+ggplot(P[P$class_GROcap!='boundary', ],
+       aes(x=class_GROcap, y=NELFE, color=class_GROcap)) +
+    ggtitle('Sum of NELFE CHiP signal around +/-500 bp from TSS') +
+    geom_violin(alpha=0.5) +
+    ylab('log10(NELFE)') +
+    xlab('class') +
+    theme_bw() +
+    geom_point(data=p_lad, position=position_jitter(width=0.5),
+               size=0.3, alpha=0.3) +
+    scale_color_manual(values=COL_class)
+
+
+p_matched = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
+                     'class_GROcap', 'escaper', 'GROcap_K562')
+
+ggplot(p_matched, aes(x=class_GROcap, y=NELFE, color=class_GROcap)) +
+    ggtitle(paste("Sum of NELFE CHiP signal around +/-500 bp from TSS",
+                  "iLAD TSS's matched on GROcap")) +
+    geom_violin(alpha=0.5) +
+    ylab('log10(NELFE)') +
+    xlab('class') +
+    geom_point(position=position_jitter(width=0.5), size=0.3, alpha=0.3) +
+    theme_bw() +
+    scale_color_manual(values=COL_class)
+dev.off()
+```
+
+
+```shell
+
+
+
+awk -vOFS='\t' '{$2-=300; $3+=300; print $1, $2, $3, $4, $5, $6}' raw_data/tss.bed | \
+    bedtools nuc -C -pattern CG -fi ~/mydata/data/hg19/genome.fa -bed /dev/stdin | \
+    awk -vOFS='\t' '
+    {
+        if (NR==1){
+            print "seqnames", "start", "end", "name",
+                  "CpG", "C+G", "exp_CpG", "CpG_OE"
+        } else {
+            CGdinuc=$16
+            CGsum=$10 + $11
+            l=$15
+            CGE=((CGsum/2)*(CGsum/2))/l
+            print $1, $2, $3, $4, CGdinuc, CGsum, CGE, CGdinuc/CGE
+        }
+    }' > raw_data/cpg_oe_300.txt
+
+
+```
+
+
+```shell
+
+awk -vOFS='\t' '{
+        $2-=300;
+        $3+=300;
+        print $1, $2, $3, $4, $5, $6
+    }' raw_data/tss.bed > raw_data/tssr_300_300.bed
+
+bedtools getfasta -name \
+                  -bed raw_data/tssr_300_300.bed \
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/tssr_300_300.fa
+
+
+AffinityProfile -sequence=raw_data/tssr_300_300.fa \
+                -strand=2 \
+                -psam_list=$REDUCE_SUITE/data/PSAMs/Jaspar_2016_pseudo.list \
+                -output=raw_data/jaspar_affinity_pseudo
+
+
+gunzip -c ../../data/tracks/hg19/human_permissive_enhancers_phase_1_and_2_20150212.bed.gz | \
+    awk -vOFS='\t' '{
+            $2-=300;
+            $3+=300;
+            print $1, $2, $3, $4, $5, $6
+        }' > raw_data/enhancer_300_300.bed
+
+bedtools getfasta -name \
+                  -bed raw_data/enhancer_300_300.bed \
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/enhancer_300_300.fa
+
+
+AffinityProfile -sequence=raw_data/enhancer_300_300.fa \
+                -strand=2 \
+                -psam_list=$REDUCE_SUITE/data/PSAMs/Jaspar_2016_pseudo.list \
+                -output=raw_data/jaspar_affinity_enhancers
+
+```
+
+```r
+library(rtracklayer)
+
+gencode_translation = read.table('../raw_data/transcript.table')
+gencode_gr = import.gff('~/mydata/data/tracks/hg19/gencode.v19.annotation.gff3.gz')
+gencode_gr = gencode_gr[gencode_gr$type=='gene']
+
+
+tf_translation = read.table('../raw_data/tf_translation.txt', stringsAsFactors=F)
+
+tf_match = match(tf_translation$gene_id,
+                 gsub('[.][0-9]+', '', gencode_gr$gene_id))
+
+tf_subset = tf_translation[!is.na(tf_match), ]
+tf_match = tf_match[!is.na(tf_match)]
+
+gencode_match = gencode_gr[tf_match]
+tf_subset$seqnames = as.vector(seqnames(gencode_match))
+tf_subset$tss = ifelse(strand(gencode_match)=='+',
+                       start(gencode_match),
+                       end(gencode_match))
+tf_subset$strand = strand(gencode_match)
+
+write.table(tf_subset, '../raw_data/tf_translation_tss.txt')
+```
+
+
+```r
+library(data.table)
+library(parallel)
+library(stringr)
+library(rtracklayer)
+library(plyr)
+setDTthreads(10)
+fantom_counts = read.table('~/mydata/data/fantom/hg19.cage_peak_phase1and2combined_counts.osc.txt.gz',
+                            header=T, stringsAsFactors=F, row.names=1)
+fantom_annot = read.table('~/mydata/data/fantom/hg19.cage_peak_phase1and2combined_ann.txt.gz',
+                           sep='\t', header=T)
+
+tf_subset = read.table('../raw_data/tf_translation_tss.txt',
+                       stringsAsFactors=F)
+tf_gr = makeGRangesFromDataFrame(tf_subset, start.field='tss', end.field='tss')
+
+
+total_vec = fantom_counts[1,]
+fantom_pos = do.call(rbind, strsplit(rownames(fantom_counts)[-1], '[:.,]+'))
+fantom_gr = GRanges(fantom_pos[,1],
+                    IRanges(as.numeric(fantom_pos[,2]),
+                            as.numeric(fantom_pos[,3])),
+                    strand=fantom_pos[,4])
+
+tf_o = findOverlaps(tf_gr, fantom_gr, maxgap=300)
+
+tf_fantom = ddply(data.frame(tf_o), .(queryHits),
+                  function(x){
+                      colSums(fantom_counts[x$subjectHits + 1, , drop=F])
+                  })
+tf_vec = unique(tf_subset$symbol[tf_fantom$queryHits])
+tf_exp_list = lapply(tf_vec,
+                     function(symbol){
+                        i_vec = which(tf_subset$symbol==symbol)
+                        match_vec = which(tf_fantom$queryHits%in%i_vec)
+                        apply(tf_fantom[match_vec, -1, drop=F], 2, max)
+                     })
+tf_exp_matrix = do.call(rbind, tf_exp_list)
+rownames(tf_exp_matrix) = tf_vec
+
+jaspar_exp = ddply(tf_subset, .(name),
+                   function(x){
+                       i_vec = which(rownames(tf_exp_matrix) %in% unique(x$symbol))
+                       if (length(i_vec) > 0){
+                           apply(tf_exp_matrix[i_vec, , drop=F], 2, min)
+                       } else {
+                           rep(NaN, ncol(tf_exp_matrix))
+                       }
+                   })
+jaspar_exp = jaspar_exp[!is.nan(jaspar_exp[,2]),]
+rownames(jaspar_exp) = jaspar_exp[,1]
+jaspar_norm = sweep(jaspar_exp[,-1], 2, as.numeric(total_vec), '/')
+
+
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                         'tss', 'distance.to.previous.tss',
+                         'k562.combined.45.55.sense',
+                         'HT1080.sense', 'gro.cap.1kb.sense',
+                         'encode.cage.reprocessed.1kb.sense',
+                         'nr.of.tissues.in.which.expressed.max')]
+
+tss_gr = GRanges(P$chr,
+                 IRanges(P$tss, P$tss),
+                 strand=P$strand)
+
+p_o = findOverlaps(tss_gr, fantom_gr, maxgap=300)
+
+
+fantom_dt = data.table(fantom_counts[subjectHits(p_o)+1,])
+gencode_fantom <- fantom_dt[, lapply(.SD, sum), by=queryHits(p_o)]
+
+gencode_dt = as.data.table(t(gencode_fantom[,-1]))
+
+jaspar_dt = as.data.table(t(jaspar_norm))
+cor_table = gencode_dt[,lapply(.SD,function(x,jaspar_dt){cor(x, jaspar_dt)},
+                               jaspar_dt=jaspar_dt)]
+
+cor_data = as.data.frame(cor_table)
+
+dimnames(cor_data) = list(rownames(jaspar_norm), P[unique(queryHits(p_o)),
+                                                   'name'])
+save(cor_data, file='../raw_data/cl20170814_jaspar_gencode_cage_cor.rda')
+
+
+```

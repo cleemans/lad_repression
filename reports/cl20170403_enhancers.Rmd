@@ -2,7 +2,7 @@
 
 ```
 
-gunzip -c ~/data/tracks/hg19/human_permissive_enhancers_phase_1_and_2_20150212.bed.gz | 
+gunzip -c ~/data/tracks/hg19/human_permissive_enhancers_phase_1_and_2_20150212.bed.gz |
     awk '
     {
         mid=($2 + $3) / 2
@@ -85,9 +85,9 @@ grocap_plus = read.table('../raw_data/enhancer_regions_grocap_plus.txt.gz', row.
                          stringsAsFactors=F)
 grocap_minus = read.table('../raw_data/enhancer_regions_grocap_minus.txt.gz', row.names=4,
                           stringsAsFactors=F)
-colnames(sure_plus) = 
-    colnames(sure_minus) = 
-    colnames(grocap_plus) = 
+colnames(sure_plus) =
+    colnames(sure_minus) =
+    colnames(grocap_plus) =
     colnames(grocap_minus) = c('chrom', 'start', 'end', 'size', 'num_data',
                                'min', 'max', 'mean', 'sum')
 
@@ -97,8 +97,9 @@ grocap_plus$mean = grocap_plus$sum / grocap_plus$num_data
 grocap_minus$mean = grocap_minus$sum / grocap_minus$num_data
 
 P_enh = data.frame(SuRE=rowMeans(cbind(sure_plus$mean, sure_minus$mean)),
-               GROcap=rowMeans(cbind(grocap_plus$mean, abs(grocap_minus$mean))),
-               row.names=rownames(sure_plus))
+                   GROcap=rowMeans(cbind(grocap_plus$mean,
+                                   abs(grocap_minus$mean))),
+                   row.names=rownames(sure_plus))
 Pseud_enh<-min(P_enh$SuRE[P_enh$SuRE>0], na.rm=TRUE)/2
 P_enh$SuRE = log10(P_enh$SuRE + Pseud_enh)
 P_enh$GROcap = log10(P_enh$GROcap + min(P_enh$GROcap[P_enh$GROcap!=0])/2)
@@ -189,8 +190,8 @@ RM_melt$variable = ifelse(RM_melt$variable=='GROcap.lad', lad_names['LAD'], lad_
 
 
 ggplot(P_enh, aes(x=SuRE,y=GROcap, color=LAD)) +
-    geom_point(data=P_enh[P_enh$LAD=='iLAD', ], size=0.5, alpha=0.05) + 
-    geom_point(data=P_enh[P_enh$LAD=='LAD', ], size=0.5, alpha=0.2) + 
+    geom_point(data=P_enh[P_enh$LAD=='iLAD', ], size=0.5, alpha=0.05) +
+    geom_point(data=P_enh[P_enh$LAD=='LAD', ], size=0.5, alpha=0.2) +
     theme_bw() +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme(legend.title=element_blank()) +
@@ -198,8 +199,8 @@ ggplot(P_enh, aes(x=SuRE,y=GROcap, color=LAD)) +
 
 
 ggplot(P_enh, aes(x=SuRE, y=GROcap, color=lad_n_enh)) +
-    geom_point(data=P_enh[P_enh$LAD=='iLAD', ], size=0.5, alpha=0.05) + 
-    geom_point(data=P_enh[P_enh$LAD=='LAD', ], size=0.5, alpha=0.2) + 
+    geom_point(data=P_enh[P_enh$LAD=='iLAD', ], size=0.5, alpha=0.05) +
+    geom_point(data=P_enh[P_enh$LAD=='LAD', ], size=0.5, alpha=0.2) +
     theme_bw() +
     geom_line(data=RM_melt, aes(x=SuRE.mean, y=value, color=variable), size=1) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
@@ -207,15 +208,15 @@ ggplot(P_enh, aes(x=SuRE, y=GROcap, color=lad_n_enh)) +
     scale_color_manual(values=COL_lad_n)
 
 p_classes = P_enh[which(P_enh$class %in% c('inactive', 'escaper', 'repressed')),]
-ggplot(P_enh, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class_n_enh), size=0.6) + 
+ggplot(P_enh, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_n_enh), size=0.6) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme_bw() +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.lad), color=COL_lad['LAD']) +
     theme(legend.title=element_blank()) +
-    scale_colour_manual(values=COL_class_n_enh) 
+    scale_colour_manual(values=COL_class_n_enh)
 ```
 
 
@@ -235,13 +236,13 @@ plot_list = list()
 for (class in c('iLAD', 'escaper', 'repressed', 'inactive')){
     subset = P_enh[which(P_enh$class==class),]
     n = paste('n =', nrow(subset))
-    plot_list[[class]] = ggplot(subset, aes(x=chrom_hmm, fill=chrom_hmm)) + 
+    plot_list[[class]] = ggplot(subset, aes(x=chrom_hmm, fill=chrom_hmm)) +
                                 geom_bar(aes(y = (..count..)/sum(..count..))) +
                                 scale_y_continuous(labels=percent, limits=c(0,1)) +
                                 ggtitle(paste("ratio between chromatin states\n", class, n)) +
-                                geom_text(aes(y = ((..count..)/sum(..count..)), 
-                                              label = paste0('n=',..count..)), 
-                                          stat = "count", vjust = -0.25) + 
+                                geom_text(aes(y = ((..count..)/sum(..count..)),
+                                              label = paste0('n=',..count..)),
+                                          stat = "count", vjust = -0.25) +
                                 scale_fill_manual(values=COL_chrom) +
                                 theme(axis.text.x = element_text(angle = 45, hjust = 1))
 }
@@ -292,12 +293,12 @@ wilcox_affinity <- function(x_affinity, y_affinity, groups, tf_table, id_vec=NUL
   median_fc =  lapply(fit, function(x){ x[[3]]})
   mean_fc =  lapply(fit, function(x){ x[[4]]})
   rank_fc =  lapply(fit, function(x){ x[[5]]})
-  result_table = cbind(id=id_vec, 
+  result_table = cbind(id=id_vec,
                        tf_table[id_vec, ],
                        direction=unlist(direction),
                        p_adjust = p_adjust,
                        median_fc = unlist(median_fc),
-                       mean_fc = unlist(mean_fc), 
+                       mean_fc = unlist(mean_fc),
                        rank_fc = unlist(rank_fc), stringsAsFactors=F)
   return(result_table)
 }
@@ -316,7 +317,7 @@ write.table(evsr_jaspar_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_
 
 
 evsr_jaspar_sig_m = evsr_jaspar_m[which(evsr_jaspar_m$p_adjust < 0.05 &
-                                        ifelse(evsr_jaspar_m$direction=='repressed', 
+                                        ifelse(evsr_jaspar_m$direction=='repressed',
                                                evsr_jaspar_m$mean_fc < 1,
                                                evsr_jaspar_m$mean_fc > 1)), ]
 write.table(evsr_jaspar_sig_m, sep='\t',row.names=F, file='escaper_vs_repressed_aff_jaspar_sig_matched_enhancers.txt')
@@ -346,7 +347,7 @@ ggplot(seg) +
   scale_color_manual(values=c(COL_seg, COL_text)) +
   scale_size(range=c(1,1.5)) +
   ylim(-0.1,1) +
-  geom_text(data=labs, aes(label=name, x=x, y=0, angle=60,hjust='right', colour=class)) 
+  geom_text(data=labs, aes(label=name, x=x, y=0, angle=60,hjust='right', colour=class))
 dev.off()
 
 
@@ -356,7 +357,7 @@ for (id in evsr_jaspar_sig_m$id){
                   affinity=aff_table_jaspar[rownames(P_enh)[P_enh$class%in%c('repressed', 'escaper')], id])
   if (!(all(df[df$class=='repressed','affinity']==0) |
        all(df[df$class=='escaper','affinity']==0))){
-    print(ggplot(df, aes(x=class, y=log10(affinity), color=class)) + 
+    print(ggplot(df, aes(x=class, y=log10(affinity), color=class)) +
             geom_violin() +
             ggtitle(paste0(id, '; ', evsr_jaspar_m[id, 'name'], '\n', evsr_jaspar_m[id, 'direction'], '; ', evsr_jaspar_m[id, 'mean_fc'])) +
             geom_point(position=position_jitter(0.5), alpha=0.3, size=0.3) +
@@ -373,7 +374,7 @@ write.table(rvsi_jaspar_m, sep='\t',row.names=F, file='repressed_vs_inactive_aff
 
 
 rvsi_jaspar_sig = rvsi_jaspar[which(rvsi_jaspar$p_adjust < 0.05 &
-                                        ifelse(rvsi_jaspar$direction=='repressed', 
+                                        ifelse(rvsi_jaspar$direction=='repressed',
                                                rvsi_jaspar$mean_fc > 1,
                                                rvsi_jaspar$mean_fc < 1)), ]
 write.table(rvsi_jaspar_sig, sep='\t',row.names=F, file='repressed_vs_inactive_aff_jaspar_sig_enhancers.txt')
@@ -403,7 +404,7 @@ ggplot(seg) +
   scale_color_manual(values=c(COL_seg, COL_text)) +
   scale_size(range=c(1,1.5)) +
   ylim(-0.1,1) +
-  geom_text(data=labs, aes(label=name, x=x, y=0, angle=60,hjust='right', colour=class)) 
+  geom_text(data=labs, aes(label=name, x=x, y=0, angle=60,hjust='right', colour=class))
 dev.off()
 
 
@@ -413,7 +414,7 @@ for (id in rvsi_jaspar_sig$id){
                   affinity=aff_table_jaspar[rownames(P_enh)[P_enh$class%in%c('repressed', 'escaper')], id])
   if (!(all(df[df$class=='repressed','affinity']==0) |
        all(df[df$class=='escaper','affinity']==0))){
-    print(ggplot(df, aes(x=class, y=log10(affinity), color=class)) + 
+    print(ggplot(df, aes(x=class, y=log10(affinity), color=class)) +
             geom_violin() +
             ggtitle(paste0(id, '; ', rvsi_jaspar[id, 'name'], '\n', rvsi_jaspar[id, 'direction'], '; ', rvsi_jaspar[id, 'mean_fc'])) +
             geom_point(position=position_jitter(0.5), alpha=0.3, size=0.3) +
@@ -536,9 +537,9 @@ RM_melt = melt(RM, measure.vars=c('GROcap.ilad', 'GROcap.lad'))
 RM_melt$variable = ifelse(RM_melt$variable=='GROcap.lad', lad_names['LAD'], lad_names['iLAD'])
 
 p_classes = P[which(P$class %in% c('inactive', 'escaper', 'repressed')),]
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class_n_prom), size=1) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_n_prom), size=1) +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     geom_line(data=RM[RM$SuRE.mean>0,], aes(x=SuRE.mean, y=GROcap.ilad - 0.5), linetype='dotdash', size=0.3) +
     geom_line(data=RM[RM$SuRE.mean>0,], aes(x=SuRE.mean, y=GROcap.ilad - 1), linetype='dotdash', size=0.3) +
@@ -548,9 +549,26 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
     guides(fill=FALSE) +
     theme(legend.title=element_blank()) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 
 ```
+
+## Enhancer - Promoter associations
+Obtained from slide-base:
+Enhancer - Promoter associations are obtained by correlating enhancer-promoter
+pairs within 500 kbases over cell type and organ facets and filtered by an adjusted
+correlation pvalue: FDR < 10-5 The enhancer-promoter associations are computed between
+enhancers and all FANTOM robust promoters.
+
+This trank used the method published in http://doi.org/doi:10.1038/nature12787 to obtain enhancer-promoter associations:
+
+Linking TSSs and enhancers by expression correlations
+
+We identified all intra-chromosomal enhancer-promoter pairs (470,315 cases, permissive set of enhancers and unique locations of RefSeq protein-coding gene transcript TSSs ± 500 bp) within 500 kb, in which the TSS was expressed >1 TPM in at least one sample, and performed Pearson correlation tests between the expression of such pairs: 64% of enhancers had at least one significant association (Benjamini–Hochberg FDR ≤ 10−5) within that distance. On average, a TSS was associated with 4.9 enhancers and an enhancer with 2.4 TSSs.
+
+Next, we identified which predicted associations were supported by ENCODE ChIA-PET (via RNAPII (MMS-126R)) interaction data21 from four ENCODE cell lines (HCT-116, HeLa-S3, K562, MCF-7) by requiring an overlap of both enhancer and promoter in both (and different) sites of a ChIA-PET interaction pair. An association was considered supported if it overlapped in this way with any cell line replicate of interactions.
+
+For comparison, the fraction of 1,672,958 published10 predicted enhancer-promoter associations derived from DNase data supported by ENCODE ChIA-PET interaction data was calculated.
 
 ```{r, fig.width=15, fig.height=15}
 link_table = read.table('../../../data/tracks/hg19/slidebase_enhancer_tss_associations.bed',
@@ -570,7 +588,7 @@ enh_gene$enh_class[!is.na(enh_match)] = as.character(P_enh$class[enh_match[!is.n
 prom_enh_table = data.frame(table(enh_gene[,c('prom_class', 'enh_class')]))
 prom_table = table(enh_gene$prom_class)
 enh_table = table(enh_gene$enh_class)
-prom_enh_table$norm = prom_enh_table$Freq / (as.numeric(prom_table[prom_enh_table$prom_class]) * 
+prom_enh_table$norm = prom_enh_table$Freq / (as.numeric(prom_table[prom_enh_table$prom_class]) *
                                              as.numeric(enh_table[prom_enh_table$enh_class]))
 prom_enh_table$x=paste(prom_enh_table$enh_class, prom_enh_table$prom_class, sep=';')
 ggplot(prom_enh_table[which(prom_enh_table$prom_class!='boundary' &
@@ -584,7 +602,7 @@ ggplot(prom_enh_table[which(prom_enh_table$prom_class!='boundary' &
          color='promoter',
          y='Freq(enh;prom) / (Freq(enh) * Freq(prom))')
 
-ggplot(prom_enh_table, aes(x=factor(x, levels=x[order(prom_class)]), 
+ggplot(prom_enh_table, aes(x=factor(x, levels=x[order(prom_class)]),
                                 y=norm, fill=enh_class, color=prom_class)) +
     geom_bar(stat='identity', size=3, width=0.7) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1)) +

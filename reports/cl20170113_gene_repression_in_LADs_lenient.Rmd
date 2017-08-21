@@ -9,7 +9,7 @@ Generally speaking, genes inside lamina associated domains are not or very lowly
 
 ## Description of Data.
 
-gencode.sure.160617.rda: 
+gencode.sure.160617.rda:
     file from Joris, received 17 June 2016. Promoter positions in this file are from Gencode. Contains SuRE, gro-cap and cage expression data as well as the number of tissues in which each promoter is expressed.
 
 
@@ -149,36 +149,36 @@ names(COL_lad_n) = lad_names
 RM_melt = melt(RM, measure.vars=c('GROcap.ilad', 'GROcap.lad'))
 RM_melt$variable = ifelse(RM_melt$variable=='GROcap.lad', lad_names['LAD'], lad_names['iLAD'])
 ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
-    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) + 
-    geom_point(data=P[P$LAD==1, ], size=0.5, alpha=0.2) + 
+    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD==1, ], size=0.5, alpha=0.2) +
     theme_bw() +
     geom_line(data=RM_melt, aes(x=SuRE.mean, y=value, color=variable), size=1) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme(legend.title=element_blank()) +
     scale_color_manual(values=COL_lad_n)
 p_classes = P[which(P$class %in% c('inactive', 'not_repressed', 'repressed')),]
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class_n_prom), size=0.6) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_n_prom), size=0.6) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme_bw() +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     theme(legend.title=element_blank()) +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 
 pdf('slides.pdf')
 RM_melt = melt(RM, measure.vars=c('GROcap.ilad', 'GROcap.lad'))
 RM_melt$variable = ifelse(RM_melt$variable=='GROcap.lad', lad_names['LAD'], lad_names['iLAD'])
 ggplot(P, aes(x=SuRE, y=GROcap)) +
-    geom_point(size=0.5, color='black', alpha=0.05) + 
+    geom_point(size=0.5, color='black', alpha=0.05) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     guides(fill=FALSE) +
     theme_bw() +
     theme(legend.title=element_blank())
 
 ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
-    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) + 
-    geom_point(data=P[P$LAD==1, ], size=1, alpha=0.6) + 
+    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD==1, ], size=1, alpha=0.6) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme_bw() +
     theme(legend.title=element_blank()) +
@@ -186,8 +186,8 @@ ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
     scale_color_manual(values=COL_lad_n)
 
 ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
-    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) + 
-    geom_point(data=P[P$LAD==1, ], size=1, alpha=0.6) + 
+    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD==1, ], size=1, alpha=0.6) +
     geom_line(data=RM_melt, aes(x=SuRE.mean, y=value, color=variable), size=1) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme_bw() +
@@ -197,8 +197,8 @@ ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
 
 
 ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
-    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) + 
-    geom_point(data=P[P$LAD==1, ], size=0.5, alpha=0.6) + 
+    geom_point(data=P[P$LAD==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD==1, ], size=0.5, alpha=0.6) +
     geom_line(data=RM_melt, aes(x=SuRE.mean, y=value, color=variable), size=1) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
     theme_bw() +
@@ -209,9 +209,9 @@ ggplot(P, aes(x=SuRE, y=GROcap, color=lad_n_prom)) +
 COL<-c("#A020F0", "#FFA500", "#006400")
 names(COL)<-c("repressed", "not_repressed", "inactive")
 
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=P[P$class=='inactive',], aes(color=class_n_prom), size=1) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=P[P$class=='inactive',], aes(color=class_n_prom), size=1) +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     geom_vline(xintercept=-0.3, linetype='dotdash', size=0.3) +
     geom_hline(yintercept=-2, linetype='dotdash', size=0.3) +
@@ -219,11 +219,11 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
     guides(fill=FALSE) +
     theme(legend.title=element_blank()) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=P[P$class%in%c('inactive', 'repressed'),], aes(color=class_n_prom), size=1) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=P[P$class%in%c('inactive', 'repressed'),], aes(color=class_n_prom), size=1) +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     geom_vline(xintercept=0.3, linetype='dotdash', size=0.3) +
     geom_hline(yintercept=-2, linetype='dotdash', size=0.3) +
@@ -232,13 +232,13 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
     guides(fill=FALSE) +
     theme(legend.title=element_blank()) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 
 p_classes = P[which(P$class %in% c('inactive', 'not_repressed', 'repressed')),]
 
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class_n_prom), size=1) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_n_prom), size=1) +
     geom_line(data=RM, aes(x=SuRE.mean, y=GROcap.ilad), color=COL_lad['iLAD']) +
     geom_line(data=RM[RM$SuRE.mean>0,], aes(x=SuRE.mean, y=GROcap.ilad - 0.5), linetype='dotdash', size=0.3) +
     geom_line(data=RM[RM$SuRE.mean>0,], aes(x=SuRE.mean, y=GROcap.ilad - 1), linetype='dotdash', size=0.3) +
@@ -248,7 +248,7 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
     guides(fill=FALSE) +
     theme(legend.title=element_blank()) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 dev.off()
 ```
 
@@ -278,7 +278,7 @@ P_end = P$tss + ifelse(P$strand=='+',300,50)
 ranges(TSSR_gr) = IRanges(P_start, P_end)
 
 body_gr = gene_gr
-P_start = ifelse(P$strand=='+', 
+P_start = ifelse(P$strand=='+',
                  P$tss + 300,
                  P$txStart - 3000)
 P_start = ifelse(P_start<1,1,P_start)
@@ -320,7 +320,7 @@ p_most_down = ddply(P[!is.na(P$ensembl_gene_id),], .(ensembl_gene_id), function(
         print('huh???')
         print(x)
         result = x[1,]
-    } 
+    }
     return(result)
   })
 
@@ -339,13 +339,13 @@ p_most_up = ddply(P[!is.na(P$ensembl_gene_id),], .(ensembl_gene_id), function(x)
         print('huh???')
         print(x)
         result = x[1,]
-    } 
+    }
     return(result)
   })
 m_most_up = match(p_most_up$name, P$name)
 m_most_up_window = match(p_most_up$name, window_gr$name)
 
-## choose -/+ 1000 based on doi: 10.4161/epi.19565 
+## choose -/+ 1000 based on doi: 10.4161/epi.19565
 F_cpg = 1000
 cpg_gr = gene_gr
 p_match = match(cpg_gr$name, P$name)
@@ -361,11 +361,11 @@ export.bed(cpg_gr, '../raw_data/cpg_window.bed')
 
 window_gr_3prime = gene_gr[width(gene_gr)>F_window]
 p_match = match(window_gr_3prime$name, P$name)
-P_start = ifelse(P[p_match, 'strand'] =='+', 
+P_start = ifelse(P[p_match, 'strand'] =='+',
                  P[p_match, 'txEnd'] - F_window,
                  P[p_match, 'txStart'] - F_window)
 P_start = ifelse(P_start<1,1,P_start)
-P_end = ifelse(P[p_match, 'strand'] =='+', 
+P_end = ifelse(P[p_match, 'strand'] =='+',
                P[p_match, 'txEnd'] + F_window,
                P[p_match, 'txStart'] + F_window)
 ranges(window_gr_3prime) = IRanges(P_start, P_end)
@@ -398,7 +398,7 @@ ggplot(p_class, aes(x=class_n_prom, y=tissues_expressed, color=class)) +
     geom_violin(alpha=0.3) +
     geom_point(data=p_class[p_class$class != 'iLAD', ],
                position=position_jitter(width=0.4),
-               alpha=0.5) + 
+               alpha=0.5) +
     theme_bw() +
     theme(legend.title=element_blank()) +
     scale_colour_manual(values=COL_class) +
@@ -409,7 +409,7 @@ ggplot(p_class, aes(x=class_n_prom, y=tissues_expressed, color=class)) +
     geom_violin(alpha=0.3) +
     geom_point(data=p_class[p_class$class != 'iLAD', ],
                position=position_jitter(width=0.4),
-               alpha=0.5) + 
+               alpha=0.5) +
     theme_bw() +
     theme(legend.title=element_blank()) +
     scale_colour_manual(values=COL_class) +
@@ -517,7 +517,7 @@ for (dam in c('K562.lamina', 'K562.nucleolus', 'K562.centromere', 'K562.speckles
         #plot:
         run_log2 = log2(runsum(Rle(subDamFus), k=wsize, endrule='constant')/
                       runsum(Rle(subDamCtrl), k=wsize, endrule='constant'))
-        plot_list[[i]] = ggplot(data.frame(subPOS, run_log2), aes(x=subPOS, y=run_log2)) + 
+        plot_list[[i]] = ggplot(data.frame(subPOS, run_log2), aes(x=subPOS, y=run_log2)) +
                              geom_line(color=COL_class[i]) +
                              ggtitle(paste(dam, i, '\n', length(s))) +
                              xlab("position relative to gene start (bp)") +
@@ -563,7 +563,7 @@ for (dam in c('K562.lamina', 'K562.nucleolus', 'K562.centromere', 'K562.speckles
         #plot:
         run_log2 = log2(runsum(Rle(subDamFus), k=wsize, endrule='constant')/
                       runsum(Rle(subDamCtrl), k=wsize, endrule='constant'))
-        plot_list[[i]] = ggplot(data.frame(subPOS, run_log2), aes(x=subPOS, y=run_log2)) + 
+        plot_list[[i]] = ggplot(data.frame(subPOS, run_log2), aes(x=subPOS, y=run_log2)) +
                              geom_line(color=COL_class[i]) +
                              ggtitle(paste(dam, i, '\n', length(s))) +
                              xlab("position relative to gene start (bp)") +
@@ -604,7 +604,7 @@ chrom_levels = unique(P$chrom_hmm)
 chrom_order = order(unlist(lapply(chrom_levels, function(x){as.numeric(strsplit(x,'_')[[1]][1])})))
 P$chrom_hmm = factor(P$chrom_hmm, levels=chrom_levels[chrom_order])
 pdf('chrom.pdf')
-ggplot(P[P$class!='boundary',], aes(x=class_n_prom, fill=chrom_hmm)) + 
+ggplot(P[P$class!='boundary',], aes(x=class_n_prom, fill=chrom_hmm)) +
     geom_bar(color='black', position='fill') +
     theme_bw() +
     scale_fill_manual(values=COL_chrom) +
@@ -847,7 +847,7 @@ names(count_list) = unlist(name_list)
 score_table = do.call(cbind,lapply(count_list,function(x){score(x)}))
 
 this_p = P[m_most_down, ]
-this_p$tssr_proseq_sense = this_p$tssr_proseq_antisense = 
+this_p$tssr_proseq_sense = this_p$tssr_proseq_antisense =
     this_p$body_proseq_sense = this_p$body_proseq_antisense = NaN
 
 this_p$tssr_proseq_sense[this_p$strand=='+'] = score_table[this_p$strand=='+', 'tssr_PROseq_plus']
@@ -859,7 +859,7 @@ this_p$body_proseq_sense[this_p$strand=='-'] = score_table[this_p$strand=='-', '
 this_p$body_proseq_antisense[this_p$strand=='+'] = score_table[this_p$strand=='+', 'body_PROseq_minus']
 this_p$body_proseq_antisense[this_p$strand=='-'] = score_table[this_p$strand=='-', 'body_PROseq_plus']
 
-P$tssr_proseq_sense = P$tssr_proseq_antisense = 
+P$tssr_proseq_sense = P$tssr_proseq_antisense =
     P$body_proseq_sense = P$body_proseq_antisense = NaN
 P[rownames(this_p), c('tssr_proseq_sense', 'tssr_proseq_antisense', 'body_proseq_sense', 'body_proseq_antisense')] = this_p[, c('tssr_proseq_sense', 'tssr_proseq_antisense', 'body_proseq_sense', 'body_proseq_antisense')]
 
@@ -905,10 +905,10 @@ for(i in c('iLAD', 'not_repressed', 'repressed', 'inactive')) #for the three gen
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -942,10 +942,10 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -980,10 +980,10 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,3) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -1037,7 +1037,7 @@ P$K562_fpm[!is.na(g_match)] = rowMeans(fpm[g_match[!is.na(g_match)],])
 p_most_active = P[rownames(p_most_active), ]
 pdf('rnaseq.pdf')
 p_most_active_class = p_most_active[p_most_active$class%in%c('not_repressed', 'repressed', 'inactive'), ]
-ggplot(p_most_active[p_most_active$class!='boundary', ], aes(x=class, y=K562_fpm, color=class)) + geom_violin(alpha=0.3) + 
+ggplot(p_most_active[p_most_active$class!='boundary', ], aes(x=class, y=K562_fpm, color=class)) + geom_violin(alpha=0.3) +
     geom_point(data=p_most_active_class, position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('poly-A RNA expression') +
     scale_color_manual(values=COL_class) +
@@ -1053,20 +1053,20 @@ s_ilad = gro_ilad[p_most_active[p_expressed,'class'][gro_ilad] == 'iLAD']
 norm_grocap_active = c(rownames(p_most_active[p_expressed,])[s_not_repressed],
                 rownames(p_most_active[p_expressed,])[s_ilad])
 
-ggplot(p_most_active[norm_grocap_active,] , aes(x=class, y=K562_fpm, color=class)) + 
-    geom_violin(alpha=0.3) + 
+ggplot(p_most_active[norm_grocap_active,] , aes(x=class, y=K562_fpm, color=class)) +
+    geom_violin(alpha=0.3) +
     geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('poly-A RNA expression') +
     scale_color_manual(values=COL_class) +
     theme_bw()
 dev.off()
 
-ggplot(p_most_active[p_most_active$class!='boundary', ], aes(x=class, y=K562_fpm, color=class)) + geom_violin(alpha=0.3) + 
+ggplot(p_most_active[p_most_active$class!='boundary', ], aes(x=class, y=K562_fpm, color=class)) + geom_violin(alpha=0.3) +
     geom_point(data=p_most_active_class, position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('poly-A RNA expression') +
     scale_color_manual(values=COL_class)
-ggplot(p_most_active[norm_grocap_active,] , aes(x=class, y=K562_fpm, color=class)) + 
-    geom_violin(alpha=0.3) + 
+ggplot(p_most_active[norm_grocap_active,] , aes(x=class, y=K562_fpm, color=class)) +
+    geom_violin(alpha=0.3) +
     geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('poly-A RNA expression') +
     scale_color_manual(values=COL_class)
@@ -1110,12 +1110,12 @@ for(i in c('iLAD', 'not_repressed', 'repressed', 'inactive')) #for the three gen
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + 
-                        geom_vline(xintercept=0, lty='dotted') + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) +
+                        geom_vline(xintercept=0, lty='dotted') +
                         ggtitle(title) +
                         ylim(0,50) +
                         theme_bw() +
-                        geom_line(col=COL_class[i]) + 
+                        geom_line(col=COL_class[i]) +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
 }
@@ -1150,13 +1150,13 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     colnames(mean) = c('x', 'y')
     #plot:
     title=paste0(i, '; n=', length(s))
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + 
-                        geom_vline(xintercept=0, lty='dotted') + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) +
+                        geom_vline(xintercept=0, lty='dotted') +
                         ggtitle(title) +
                         ylim(0,35) +
                         theme_bw() +
-                        geom_line(col=COL_class[i]) + 
-                        geom_line(data=mean[mean[,1]>22000,], 
+                        geom_line(col=COL_class[i]) +
+                        geom_line(data=mean[mean[,1]>22000,],
                                    stat="smooth", method="lm",
                                    color='black', lty='dotdash', lwd=1, alpha=0.5) +
                         theme(axis.title=element_blank()) +
@@ -1169,23 +1169,23 @@ p_matched$tss_ttseq = p_matched$body_ttseq = NaN
 
 
 
-p_matched$tss_ttseq[p_matched$strand=='+'] = 
+p_matched$tss_ttseq[p_matched$strand=='+'] =
     rowSums(rep1_plus_matrix[p_matched[p_matched$strand=='+', 'name'],
                              F_window:(F_window + 100)]) +
     rowSums(rep2_plus_matrix[p_matched[p_matched$strand=='+', 'name'],
                              F_window:(F_window + 100)])
-p_matched$tss_ttseq[p_matched$strand=='-'] = 
+p_matched$tss_ttseq[p_matched$strand=='-'] =
     rowSums(rep1_plus_matrix[p_matched[p_matched$strand=='-', 'name'],
                              F_window:(F_window - 100)]) +
     rowSums(rep2_plus_matrix[p_matched[p_matched$strand=='-', 'name'],
                              F_window:(F_window - 100)])
 
-p_matched$body_ttseq[p_matched$strand=='+'] = 
+p_matched$body_ttseq[p_matched$strand=='+'] =
     rowSums(rep1_plus_matrix[p_matched[p_matched$strand=='+', 'name'],
                              (F_window + 100):(F_window * 2 + 1)]) +
     rowSums(rep2_plus_matrix[p_matched[p_matched$strand=='+', 'name'],
                              (F_window + 100):(F_window * 2 + 1)])
-p_matched$body_ttseq[p_matched$strand=='-'] = 
+p_matched$body_ttseq[p_matched$strand=='-'] =
     rowSums(rep1_plus_matrix[p_matched[p_matched$strand=='-', 'name'],
                              1:(F_window - 100)]) +
     rowSums(rep2_plus_matrix[p_matched[p_matched$strand=='-', 'name'],
@@ -1280,7 +1280,7 @@ Maybe the escapers expressed in a low number of tissues are borderline cases and
 
 ```{r}
 ggplot(P[P$LAD==1,], aes(x=GROcap, y=tissues_expressed, color=factor(class))) +
-    geom_point() + 
+    geom_point() +
     scale_colour_manual(values=COL_class) +
     geom_vline(xintercept = -1) +
     geom_hline(yintercept = 200)
@@ -1453,15 +1453,15 @@ How good is the relation between GROcap and RNA-seq actually?
 
 ```{r}
 p_classes = P[P$class%in%c('not_repressed', 'repressed', 'inactive'), ]
-ggplot(P, aes(x=SuRE, y=K562_fpm)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class), size=0.6) + 
+ggplot(P, aes(x=SuRE, y=K562_fpm)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class), size=0.6) +
     scale_colour_manual(values=COL_class) +
     theme_bw()
 
-ggplot(P, aes(x=GROcap, y=K562_fpm)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class), size=0.6) + 
+ggplot(P, aes(x=GROcap, y=K562_fpm)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class), size=0.6) +
     scale_colour_manual(values=COL_class)  +
     theme_bw()
 ```
@@ -1479,7 +1479,7 @@ i = ttseq@i + 1
 j = findInterval(seq(ttseq@x)-1, ttseq@p[-1]) + 1
 
 features = data.frame(seqnames=location_data$seqnames[i],
-                  start=as.numeric(as.vector(location_data$start[i])) - F_window + 
+                  start=as.numeric(as.vector(location_data$start[i])) - F_window +
                             ifelse(P[width(gene_gr)>F_window,'strand'][i]=='+',
                                    j, as.numeric(as.vector(location_data$length[i]))-j))
 features$end = features$start
@@ -1620,15 +1620,15 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
 ### POL2 occupancy
 
 ```shell
-samtools depth ENCFF000QDB.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDB.bg & 
-samtools depth ENCFF000QDM.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDM.bg & 
-samtools depth ENCFF000YWZ.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000YWZ.bg & 
-samtools depth ENCFF235CSW.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF235CSW.bg & 
-samtools depth ENCFF750MIM.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF750MIM.bg & 
-samtools depth ENCFF000QDE.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDE.bg & 
-samtools depth ENCFF000QDN.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDN.bg & 
-samtools depth ENCFF000YXA.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000YXA.bg & 
-samtools depth ENCFF710NTS.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF710NTS.bg & 
+samtools depth ENCFF000QDB.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDB.bg &
+samtools depth ENCFF000QDM.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDM.bg &
+samtools depth ENCFF000YWZ.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000YWZ.bg &
+samtools depth ENCFF235CSW.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF235CSW.bg &
+samtools depth ENCFF750MIM.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF750MIM.bg &
+samtools depth ENCFF000QDE.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDE.bg &
+samtools depth ENCFF000QDN.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000QDN.bg &
+samtools depth ENCFF000YXA.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF000YXA.bg &
+samtools depth ENCFF710NTS.bam | awk '{if ($3 != 0){print $1"\t"$2"\t"$2+1"\t"$3}}' > ENCFF710NTS.bg &
 
 
 
@@ -1883,7 +1883,7 @@ j_list = lapply(seq(1, length(window_pol2a_rep1_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_pol2a_rep1_split), 2), 
+val_list = lapply(seq(2, length(window_pol2a_rep1_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 4){
                           return(as.numeric(split[[x]][5:length(split[[x]])]))
@@ -1920,7 +1920,7 @@ j_list = lapply(seq(1, length(window_pol2a_rep2_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_pol2a_rep2_split), 2), 
+val_list = lapply(seq(2, length(window_pol2a_rep2_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 4){
                           return(as.numeric(split[[x]][5:length(split[[x]])]))
@@ -1950,7 +1950,7 @@ j_list = lapply(seq(1, length(window_pol2a_ctrl1_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_pol2a_ctrl1_split), 2), 
+val_list = lapply(seq(2, length(window_pol2a_ctrl1_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 4){
                         return(as.numeric(split[[x]][5:length(split[[x]])]))
@@ -1981,7 +1981,7 @@ j_list = lapply(seq(1, length(window_pol2a_ctrl2_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_pol2a_ctrl2_split), 2), 
+val_list = lapply(seq(2, length(window_pol2a_ctrl2_split), 2),
                   function(x, split){
                       as.numeric(split[[x]][5:length(split[[x]])])
                   }, split=window_pol2a_ctrl2_split)
@@ -2159,7 +2159,7 @@ pw_table_plus = ddply(pw, .(num), function(x){
         end = table[]
         pos = table[,3:ncol(table), drop=F]
         result = data.frame(seqnames=chr,
-                                          start=unlist(start + pos[1,]), 
+                                          start=unlist(start + pos[1,]),
                                           end=unlist(start + pos[1,]),
                                           score=unlist(pos[2,]),
                                           strand='+')
@@ -2180,7 +2180,7 @@ pw_table_minus = ddply(pw, .(num), function(x){
         start = table[1,2]
         pos = table[,3:ncol(table), drop=F]
         result = data.frame(seqnames=chr,
-                                          start=unlist(start + pos[1,]), 
+                                          start=unlist(start + pos[1,]),
                                           end=unlist(start + pos[1,]),
                                           score=unlist(pos[2,])*-1,
                                           strand='-')
@@ -2211,7 +2211,7 @@ j_list = lapply(seq(1, length(window_proseq_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_proseq_plus_split), 2), 
+val_list = lapply(seq(2, length(window_proseq_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2246,7 +2246,7 @@ j_list = lapply(seq(1, length(window_proseq_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_proseq_minus_split), 2), 
+val_list = lapply(seq(2, length(window_proseq_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2280,7 +2280,7 @@ j_list = lapply(seq(1, length(window_proseq_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_proseq_plus_split), 2), 
+val_list = lapply(seq(2, length(window_proseq_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2315,7 +2315,7 @@ j_list = lapply(seq(1, length(window_proseq_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_proseq_minus_split), 2), 
+val_list = lapply(seq(2, length(window_proseq_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2596,7 +2596,7 @@ j_list = lapply(seq(1, length(prom_window_ttseq_rep1_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(prom_window_ttseq_rep1_split), 2), 
+val_list = lapply(seq(2, length(prom_window_ttseq_rep1_split), 2),
                   function(x, split){
                       as.numeric(split[[x]][4:length(split[[x]])])
                   }, split=prom_window_ttseq_rep1_split)
@@ -2619,7 +2619,7 @@ j_list = lapply(seq(1, length(prom_window_ttseq_rep2_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(prom_window_ttseq_rep2_split), 2), 
+val_list = lapply(seq(2, length(prom_window_ttseq_rep2_split), 2),
                   function(x, split){
                       as.numeric(split[[x]][4:length(split[[x]])])
                   }, split=prom_window_ttseq_rep2_split)
@@ -2665,7 +2665,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep1_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep1_plus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep1_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2700,7 +2700,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep1_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep1_minus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep1_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2729,7 +2729,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep2_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep2_plus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep2_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2764,7 +2764,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep2_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep2_minus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep2_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2801,7 +2801,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep1_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep1_plus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep1_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2836,7 +2836,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep1_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep1_minus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep1_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2865,7 +2865,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep2_plus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep2_plus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep2_plus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2900,7 +2900,7 @@ j_list = lapply(seq(1, length(window_ttseq_rep2_minus_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_ttseq_rep2_minus_split), 2), 
+val_list = lapply(seq(2, length(window_ttseq_rep2_minus_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                           as.numeric(split[[x]][4:length(split[[x]])])
@@ -2961,7 +2961,7 @@ j_list = lapply(seq(1, length(window_h3k9_split), 2),
 i_vec = unlist(i_list)
 j_vec = unlist(j_list)
 
-val_list = lapply(seq(2, length(window_h3k9_split), 2), 
+val_list = lapply(seq(2, length(window_h3k9_split), 2),
                   function(x, split){
                       if (length(split[[x]]) > 3){
                         return(as.numeric(split[[x]][4:length(split[[x]])]))
@@ -2998,10 +2998,10 @@ for(i in c('iLAD', 'not_repressed', 'repressed', 'inactive')) #for the three gen
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -3030,10 +3030,10 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -3089,7 +3089,7 @@ P$CG_OE = NaN
 P$CG_OE = cpg[cpg_match,'CG_OE']
 
 P_class = P[P$class%in%names(COL), ]
-ggplot(P[P$class!='boundary', ], aes(x=class, y=CG_OE, color=class)) + geom_violin(alpha=0.3) + 
+ggplot(P[P$class!='boundary', ], aes(x=class, y=CG_OE, color=class)) + geom_violin(alpha=0.3) +
     geom_point(data=P_class, position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('CpG observed over expected') +
     scale_color_manual(values=COL_class)
@@ -3104,8 +3104,8 @@ s_ilad = gro_ilad[P[p_expressed,'class'][gro_ilad] == 'iLAD']
 
 norm_grocap_active = c(rownames(P[p_expressed,])[s_not_repressed],
                 rownames(P[p_expressed,])[s_ilad])
-ggplot(P[norm_grocap_active,] , aes(x=class, y=CG_OE, color=class)) + 
-    geom_violin(alpha=0.3) + 
+ggplot(P[norm_grocap_active,] , aes(x=class, y=CG_OE, color=class)) +
+    geom_violin(alpha=0.3) +
     geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('GC frequency') +
     scale_color_manual(values=COL_class)
@@ -3118,7 +3118,7 @@ P$CG_OE = NaN
 P$CG_OE = cpg[cpg_match,'CG_OE']
 
 P_class = P[P$class%in%names(COL), ]
-ggplot(P[P$class!='boundary', ], aes(x=class, y=CG_OE, color=class)) + geom_violin(alpha=0.3) + 
+ggplot(P[P$class!='boundary', ], aes(x=class, y=CG_OE, color=class)) + geom_violin(alpha=0.3) +
     geom_point(data=P_class, position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('CpG observed over expected') +
     scale_color_manual(values=COL_class)
@@ -3133,8 +3133,8 @@ s_ilad = gro_ilad[P[p_expressed,'class'][gro_ilad] == 'iLAD']
 
 norm_grocap_active = c(rownames(P[p_expressed,])[s_not_repressed],
                 rownames(P[p_expressed,])[s_ilad])
-ggplot(P[norm_grocap_active,] , aes(x=class, y=CG_OE, color=class)) + 
-    geom_violin(alpha=0.3) + 
+ggplot(P[norm_grocap_active,] , aes(x=class, y=CG_OE, color=class)) +
+    geom_violin(alpha=0.3) +
     geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
     ylab('GC frequency') +
     scale_color_manual(values=COL_class)
@@ -3166,15 +3166,15 @@ plot_list = list()
 for (class in c('iLAD', 'not_repressed', 'repressed', 'inactive')){
     subset = P[which(P$class==class),]
     n = paste('n =', nrow(subset))
-    plot_list[[class]] = ggplot(subset, aes(x=cpg_class, fill=cpg_class)) + 
+    plot_list[[class]] = ggplot(subset, aes(x=cpg_class, fill=cpg_class)) +
                                 theme_bw() +
                                 guides(fill=FALSE) +
                                 geom_bar(aes(y = (..count..)/sum(..count..))) +
                                 scale_y_continuous(labels=percent, limits=c(0,1)) +
                                 ggtitle(class) +
 
-                                geom_text(aes(y = ((..count..)/sum(..count..)), 
-                                              label = paste0('n=',..count..)), 
+                                geom_text(aes(y = ((..count..)/sum(..count..)),
+                                              label = paste0('n=',..count..)),
                                           stat = "count", vjust = -0.25) +
                                 theme(axis.title=element_blank(),
                                       plot.title = element_text(color=COL_class[class], size=14, face="bold.italic"))
@@ -3197,15 +3197,15 @@ plot_list = list()
 for (class in c('iLAD', 'not_repressed', 'repressed', 'inactive')){
     subset = P[which(P$class==class),]
     n = paste('n =', nrow(subset))
-    plot_list[[class]] = ggplot(subset, aes(x=cpg_class_stringent, fill=cpg_class_stringent)) + 
+    plot_list[[class]] = ggplot(subset, aes(x=cpg_class_stringent, fill=cpg_class_stringent)) +
                                 theme_bw() +
                                 guides(fill=FALSE) +
                                 geom_bar(aes(y = (..count..)/sum(..count..))) +
                                 scale_y_continuous(labels=percent, limits=c(0,1)) +
                                 ggtitle(class) +
 
-                                geom_text(aes(y = ((..count..)/sum(..count..)), 
-                                              label = paste0('n=',..count..)), 
+                                geom_text(aes(y = ((..count..)/sum(..count..)),
+                                              label = paste0('n=',..count..)),
                                           stat = "count", vjust = -0.25) +
                                 theme(axis.title=element_blank(),
                                       plot.title = element_text(color=COL_class[class], size=14, face="bold.italic"))
@@ -3237,10 +3237,10 @@ for(i in c('iLAD', 'not_repressed', 'repressed', 'inactive')) #for the three gen
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -3274,10 +3274,10 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,5) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -3312,10 +3312,10 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,3) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -3356,12 +3356,12 @@ for(i in c('iLAD', 'not_repressed', 'repressed', 'inactive')) #for the three gen
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + 
-                        geom_vline(xintercept=0, lty='dotted') + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) +
+                        geom_vline(xintercept=0, lty='dotted') +
                         ggtitle(title) +
                         ylim(0,50) +
                         theme_bw() +
-                        geom_line(col=COL_class[i]) + 
+                        geom_line(col=COL_class[i]) +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
 }
@@ -3396,13 +3396,13 @@ for(i in c('iLAD', 'not_repressed')) #for the three gene classes
     colnames(mean) = c('x', 'y')
     #plot:
     title=paste0(i, '; n=', length(s))
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + 
-                        geom_vline(xintercept=0, lty='dotted') + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) +
+                        geom_vline(xintercept=0, lty='dotted') +
                         ggtitle(title) +
                         ylim(0,35) +
                         theme_bw() +
-                        geom_line(col=COL_class[i]) + 
-                        geom_line(data=mean[mean[,1]>22000,], 
+                        geom_line(col=COL_class[i]) +
+                        geom_line(data=mean[mean[,1]>22000,],
                                    stat="smooth", method="lm",
                                    color='black', lty='dotdash', lwd=1, alpha=0.5) +
                         theme(axis.title=element_blank()) +

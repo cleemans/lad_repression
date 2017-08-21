@@ -469,6 +469,11 @@ AffinityProfile -sequence=raw_data/tssr_300_300.fa \
                 -psam_list=$REDUCE_SUITE/data/PSAMs/Jaspar_2016.list \
                 -output=raw_data/jaspar_affinity_300_300
 
+AffinityProfile -sequence=raw_data/tssr_300_300.fa \
+                -strand=2 \
+                -psam_list=$REDUCE_SUITE/data/PSAMs/Jaspar_2016_pseudo.list \
+                -output=raw_data/jaspar_affinity_pseudo
+
 AffinityProfile -sequence=raw_data/tssr_300_50.fa \
                 -strand=2 \
                 -threshold=0.001 \

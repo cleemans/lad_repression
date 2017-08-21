@@ -1,0 +1,1521 @@
+# knitr document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - to date
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains. In this report I would like to investigate what defines these 3 groups of genes and how they compare to genes outside of lamina associated domains. Previously I did this for K562, now I would like to do the same for HT1080.
+
+## Description of Data.
+
+gencode.sure.160617.rda:
+    file from Joris, received 17 June 2016. Promoter positions in this file are from Gencode. Contains SuRE, gro-cap and cage expression data as well as the number of tissues in which each promoter is expressed.
+
+
+```{r}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(DESeq2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(Matrix)
+library(grid)
+library(glmnet)
+library(BSgenome)
+library(doMC)
+library(ggdendro)
+registerDoMC(cores=10)
+load('../raw_data/biomart.rdata')
+
+## There was one promoter that was wrongly annotated
+bm_p[bm_p$ensembl_transcript_id=='ENST00000357491','ensembl_gene_id' ] = 'ENSG00000196350'
+
+
+
+## Did not want to go through the hassle of install complete TFBStools package, since it was
+## complaining abount dependencies. And I only needed JASPAR motif parsing functionality.
+## So I copied the function from TFBSTools.
+## <<< copied from TFBSTools >>>
+### -----------------------------------------------------------------
+### readJASPARMatrix: read the jaspar format PFM in txt file
+### "individual" format:
+### >MA0001.1 AGL3
+### A  [ 0  3 79 40 66 48 65 11 65  0 ]
+### C  [94 75  4  3  1  2  5  2  3  3 ]
+### G  [ 1  0  3  4  1  0  5  3 28 88 ]
+### T  [ 2 19 11 50 29 47 22 81  1  6 ]
+### "all" format: multiple "individual" matrices and seperated with a blank line
+### Exported
+.processJASPARText <- function(text){
+  ID <- sub("^>", "", strsplit(text[1], "\t")[[1]][1])
+  name <- strsplit(text[1], "\t")[[1]][2]
+  if(!identical(substr(text[2:5], 1, 1), DNA_BASES)){
+    stop("The second to fifth lines of the file must start with",
+         "`A`, `C`, `G`, `T`, respectively.")
+  }
+  profileMatrix <- do.call(rbind, strsplit(sub(" *]$", "",
+                                               sub("^(A|C|G|T)  \\[ *", "",
+                                                   text[2:5])), " +"))
+  mode(profileMatrix) <- "integer"
+  rownames(profileMatrix) <- DNA_BASES
+  ## changed the following part:
+  # ans <- PFMatrix(ID=ID, name=name, profileMatrix=profileMatrix)
+  pwm = log(t(profileMatrix)/colSums(profileMatrix))
+  ans <- list(ID=ID, name=name, profileMatrix=pwm)
+}
+
+readJASPARMatrix <- function(fn, type=c("individual", "all")){
+  type <- match.arg(type)
+  text <- readLines(fn)
+  if(type == "individual"){
+    if(length(text) != 5L){
+      stop("The `individual` format is supposed to have 5 lines!")
+    }
+    ans <- .processJASPARText(text)
+  }else{
+    if(length(text) %% 6 != 0L){
+      stop("The `all` format is supposed to have a number of lines",
+           "mutipled by 6!")
+    }
+    text2 <- split(text, rep(1:(length(text)/6), rep(6, length(text)/6)))
+    ans <- lapply(text2, .processJASPARText)
+    # ans <- do.call(PFMatrixList, ans)
+  }
+  return(ans)
+}
+## <<< end of copie >>>>
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+```
+
+
+# MAIN
+
+### SuRE data
+Previously, Bas defined three different groups of promoters in LADs. The "escaper", "repressed" and "inactive" group. The "escaper" group contains promoters that are expressed in their endogenous LAD environment. The "repressed" group is inactive in the endogenous setting, but they do show autonomous promoter activity in SuRE data. The 'inactive' group shows neither endogenous expression nor autonomous promoter activity in SuRE data.
+
+```{r, fig.width=10, fig.height=8}
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+load("../raw_data/gencode.sure.160617.rda")
+
+#first re-calculate pseudocounts without jitter
+P<-gencode.sure.170712[,c(1:8, 23, 33, 20, 26, 27)] #SuRE, GRO-cap, CAGE and LAD columns only
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_old", 'tissues_expressed')
+
+## for promoters and gene expression let's convert promoter transcript id's to gene id's
+P$ensembl_transcript_id = do.call(rbind, strsplit(P$name, split='[.]'))[,1]
+
+nrow(P) #orriginal number of rows
+bm_match = match(P$ensembl_transcript_id, bm_p$ensembl_transcript_id)
+P<-merge(P, bm_p, by="ensembl_transcript_id", all.x=TRUE, sort=F)
+nrow(P) #some double rows were introduced
+
+P = P[match(gencode.sure.170712$name, P$name), ]
+
+length(unique(P$ensembl_gene_id)) #number of unique genes
+
+table(P[,c('strand.x','strand.y')]) #almost all strand listings are consistent
+
+P<-P[, colnames(P)!='strand.y']
+colnames(P)[colnames(P)=='strand.x'] = "strand"
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+## let's see if indeed we get the same LADs
+all(P$LAD_K562==gencode.sure.160617$k562.lad)
+
+
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+## get CAGE data
+export.bed(tss_gr, 'tss.bed')
+```
+
+## CAGE calculation
+I am using different data from Joris, since HT1080 was not in the ENCODE data, only in the Fantom data. There are some mayor differences between these datasets, whereas previous data was poly-A selected and PCR-amplified, Fantom did not select, nor did it PCR-amplify
+
+
+```bash
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/K562_ENCODE_biol_rep1.CNhs12334.10824-111C5.hg19.nobarcode.bam > results/tss_CAGE_K562_rep1.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/K562_ENCODE_biol_rep2.CNhs12335.10825-111C6.hg19.nobarcode.bam > results/tss_CAGE_K562_rep2.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/HT-1080.CNhs11860.10758-110E2.hg19.nobarcode.bam  > results/tss_CAGE_HT1080.bed
+```
+
+```{r}
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+
+
+
+cor = cor(K562_CAGE_rep1[,7], P$CAGE_K562)
+ggplot(data.frame(fantom=K562_CAGE_rep1[,7], ENCODE=P$CAGE_K562),
+       aes(x=log10(fantom), y=log10(ENCODE))) +
+    ggtitle(paste('fantom CAGE vs ENCODE CAGE\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(K562_CAGE_rep1[,7], P$GROcap_K562)
+ggplot(data.frame(fantom=K562_CAGE_rep1[,7], GROcap=P$GROcap_K562),
+       aes(x=log10(fantom), y=log10(GROcap))) +
+    ggtitle(paste('fantom CAGE vs GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(P$CAGE_K562, P$GROcap_K562)
+ggplot(data.frame(ENCODE=P$CAGE_K562, GROcap=P$GROcap_K562),
+       aes(x=log10(ENCODE), y=log10(GROcap))) +
+    ggtitle(paste('ENCODE CAGE vs GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7])
+ggplot(data.frame(fantom_rep1=K562_CAGE_rep1[,7], fantom_rep2=K562_CAGE_rep2[,7]),
+       aes(x=log10(fantom_rep1), y=log10(fantom_rep2))) +
+    ggtitle(paste('fantom CAGE K562 rep 1 vs. rep 2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(K562_CAGE_rep1[,7], HT1080_CAGE[,7])
+ggplot(data.frame(K562=K562_CAGE_rep1[,7], HT1080=HT1080_CAGE[,7]),
+       aes(x=log10(K562), y=log10(HT1080))) +
+    ggtitle(paste('fantom CAGE K562 vs. HT1080\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+## I want the counts to be comparable, so the cut-off is similar
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+
+P$CAGE_K562 = K562_CAGE
+P$CAGE_HT1080 = HT1080_CAGE[,7]
+
+```
+**conclusion:**
+Fantom CAGE data is highly reproducible, but the data is completely different between different CAGE approaches and again different from GROcap. There is even higher correlation between the same CAGE approach in two different cell lines.
+
+## correlation between replicates of previous CAGE dataset used
+Now I am interested wether the ENCODE CAGE is just as reproducible.
+
+```bash
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/wgEncodeRikenCageK562CellPapAlnRep1.bam > results/tss_CAGE_ENCODE_rep1.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/wgEncodeRikenCageK562CellPapAlnRep2.bam > results/tss_CAGE_ENCODE_rep2.bed
+```
+
+```{r}
+ENCODE_CAGE_rep1 = read.table('../results/tss_CAGE_ENCODE_rep1.bed')
+ENCODE_CAGE_rep2 = read.table('../results/tss_CAGE_ENCODE_rep2.bed')
+cor = cor(ENCODE_CAGE_rep1[,7], ENCODE_CAGE_rep2[,7])
+ggplot(data.frame(rep1=ENCODE_CAGE_rep1[,7], rep2=ENCODE_CAGE_rep2[,7]),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE CAGE K562 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+
+
+HT1080_RAMPAGE_rep1 = read.table('../results/ENCODE_RNA/HT1080_genes_rep1_ENCFF748NPL.tsv',
+                                 stringsAsFactors=F, header=T, row.names=1)
+HT1080_RAMPAGE_rep2 = read.table('../results/ENCODE_RNA/HT1080_genes_rep2_ENCFF091WWB.tsv',
+                                 stringsAsFactors=F, header=T, row.names=1)
+
+K562_RAMPAGE_rep1 = read.table('../results/ENCODE_RNA/K562_genes_rep1_ENCFF268PEQ.tsv',
+                                 stringsAsFactors=F, header=T, row.names=1)
+K562_RAMPAGE_rep2 = read.table('../results/ENCODE_RNA/K562_genes_rep2_ENCFF315ZPM.tsv',
+                                 stringsAsFactors=F, header=T, row.names=1)
+
+cor = cor(K562_RAMPAGE_rep1$pme_FPKM, K562_RAMPAGE_rep2$pme_FPKM)
+ggplot(data.frame(rep1=K562_RAMPAGE_rep1$pme_FPKM, rep2=K562_RAMPAGE_rep2$pme_FPKM),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE RAMPAGE K562 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(HT1080_RAMPAGE_rep1$pme_FPKM, HT1080_RAMPAGE_rep2$pme_FPKM)
+ggplot(data.frame(rep1=HT1080_RAMPAGE_rep1$pme_FPKM, rep2=HT1080_RAMPAGE_rep2$pme_FPKM),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE RAMPAGE HT1080 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+ramp_match = match(P$ensembl_gene_id, gsub('[.][1-9]+', '', rownames(K562_RAMPAGE_rep1)))
+
+P_K562_RAMPAGE_rep1 = K562_RAMPAGE_rep1[ramp_match[!is.na(ramp_match)], ]
+P_K562_RAMPAGE_rep2 = K562_RAMPAGE_rep2[ramp_match[!is.na(ramp_match)], ]
+P_HT1080_RAMPAGE_rep1 = HT1080_RAMPAGE_rep1[ramp_match[!is.na(ramp_match)], ]
+P_HT1080_RAMPAGE_rep2 = HT1080_RAMPAGE_rep2[ramp_match[!is.na(ramp_match)], ]
+
+
+df = data.frame(rep1=P_K562_RAMPAGE_rep1$pme_FPKM, rep2=P_K562_RAMPAGE_rep2$pme_FPKM)
+df = df[!is.na(df$rep1) | !is.na(df$rep1), ]
+cor = cor(df$rep1, df$rep2)
+
+ggplot(df, aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE RAMPAGE K562 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+df = data.frame(rep1=P_HT1080_RAMPAGE_rep1$pme_FPKM, rep2=P_HT1080_RAMPAGE_rep2$pme_FPKM)
+df = df[!is.na(df$rep1) | !is.na(df$rep1), ]
+cor = cor(df$rep1, df$rep2)
+ggplot(df, aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE RAMPAGE HT1080 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+P$K562_RAMPAGE = NaN
+P$K562_RAMPAGE[!is.na(ramp_match)] = rowMeans(cbind(P_K562_RAMPAGE_rep1$pme_TPM,
+                                                    P_K562_RAMPAGE_rep2$pme_TPM))
+P$HT1080_RAMPAGE = NaN
+P$HT1080_RAMPAGE[!is.na(ramp_match)] = rowMeans(cbind(P_HT1080_RAMPAGE_rep1$pme_TPM,
+                                                      P_HT1080_RAMPAGE_rep2$pme_TPM))
+
+
+cor = cor(P$GROcap_K562[which(!is.na(P$K562_RAMPAGE))], P$K562_RAMPAGE[which(!is.na(P$K562_RAMPAGE))])
+ggplot(P[which(!is.na(P$K562_RAMPAGE)), ], aes(x=log10(GROcap_K562), y=log10(K562_RAMPAGE))) +
+    ggtitle(paste('K562 ENCODE RAMPAGE vs K562 GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(P$CAGE_K562_old[which(!is.na(P$K562_RAMPAGE))], P$K562_RAMPAGE[which(!is.na(P$K562_RAMPAGE))])
+ggplot(P[which(!is.na(P$K562_RAMPAGE)), ], aes(x=log10(CAGE_K562_old), y=log10(K562_RAMPAGE))) +
+    ggtitle(paste('K562 ENCODE RAMPAGE vs ENCODE CAGE\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(P$CAGE_K562[which(!is.na(P$K562_RAMPAGE))], P$K562_RAMPAGE[which(!is.na(P$K562_RAMPAGE))])
+ggplot(P[which(!is.na(P$K562_RAMPAGE)), ], aes(x=log10(CAGE_K562), y=log10(K562_RAMPAGE))) +
+    ggtitle(paste('K562 ENCODE RAMPAGE vs fantom CAGE\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+
+cor = cor(P$GROcap_K562, P$HT1080_RAMPAGE)
+ggplot(P, aes(x=log10(GROcap_K562), y=log10(HT1080_RAMPAGE))) +
+    ggtitle(paste('HT1080 ENCODE RAMPAGE vs K562 GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+```
+**conclusion:**
+Fantom data is more highly reproducible and I don't know what's going on with the RAMPAGE data, but it is not correlating with other measures. I tried both TPM and FPKM and also the transcript data, but in all cases it correlates poorly.
+
+
+## DNAse accessibility
+Maybe DNAse signal can be used as an extra proxy so we can build a multi-dimensional classifier with CAGE and DNAse.
+
+```bash
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/K562_rep1_ENCFF001BSF.bigWig /dev/stdout > results/tss_DNAse_K562_rep1.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/K562_rep2_ENCFF001DPE.bigWig /dev/stdout > results/tss_DNAse_K562_rep2.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/HT1080_rep1_ENCFF930ZWL.bigWig /dev/stdout > results/tss_DNAse_HT1080_rep1.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/HT1080_rep2_ENCFF760VXZ.bigWig /dev/stdout > results/tss_DNAse_HT1080_rep2.txt
+
+```
+
+```{r, fig.width=10, fig.height=10}
+K5_DNAse_rep1 = read.table('../results/tss_DNAse_K562_rep1.txt')
+K5_DNAse_rep2 = read.table('../results/tss_DNAse_K562_rep2.txt')
+K5_DNAse_rep1[,7][is.na(K5_DNAse_rep1[,7])] = K5_DNAse_rep2[,7][is.na(K5_DNAse_rep2[,7])] = 0
+cor = cor(K5_DNAse_rep1[,7], K5_DNAse_rep2[,7])
+ggplot(data.frame(rep1=K5_DNAse_rep1[,7], rep2=K5_DNAse_rep2[,7]),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('Max DNAse signal K562 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+P$DNAse_K562 = rowMeans(cbind(K5_DNAse_rep1[,7], K5_DNAse_rep2[,7]))
+
+cor = cor(P$GROcap_K562, P$DNAse_K562)
+ggplot(P, aes(x=log10(GROcap_K562), y=log10(DNAse_K562))) +
+    ggtitle(paste('K562 DNAse vs K562 GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(P$CAGE_K562, P$DNAse_K562)
+ggplot(P, aes(x=log10(CAGE_K562), y=log10(DNAse_K562))) +
+    ggtitle(paste('K562 DNAse vs K562 Fantom CAGE\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+HT_DNAse_rep1 = read.table('../results/tss_DNAse_HT1080_rep1.txt')
+HT_DNAse_rep2 = read.table('../results/tss_DNAse_HT1080_rep2.txt')
+HT_DNAse_rep1[,7][is.na(HT_DNAse_rep1[,7])] = HT_DNAse_rep2[,7][is.na(HT_DNAse_rep2[,7])] = 0
+cor = cor(HT_DNAse_rep1[,7], HT_DNAse_rep2[,7])
+ggplot(data.frame(rep1=HT_DNAse_rep1[,7], rep2=HT_DNAse_rep2[,7]),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('Max DNAse signal HT1080 rep1 vs rep2\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+P$DNAse_HT1080 = rowMeans(cbind(HT_DNAse_rep1[,7], HT_DNAse_rep2[,7]))
+
+cor = cor(P$GROcap_K562, P$DNAse_HT1080)
+ggplot(P, aes(x=log10(GROcap_K562), y=log10(DNAse_HT1080))) +
+    ggtitle(paste('HT1080 DNAse vs K562 GROcap\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+cor = cor(P$CAGE_HT1080, P$DNAse_HT1080)
+ggplot(P, aes(x=log10(CAGE_HT1080), y=log10(DNAse_HT1080))) +
+    ggtitle(paste('HT1080 DNAse vs HT1080 Fantom CAGE\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+```
+
+**conclusion**
+There is not a lot of correlation, but there is some, hopefully we can combine DNAse and CAGE.
+
+
+```{r, fig.width=10, fig.height=10}
+
+
+## to be used by CGtools as the complete set of TSS's
+peaks = data.frame(seqname=P$chr,
+                   start=P$tss,
+                   end=P$tss,
+                   strand=P$strand)
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562', 'CAGE_K562',
+              'CAGE_HT1080', 'DNAse_K562', 'DNAse_HT1080', 'K562_RAMPAGE',
+              'HT1080_RAMPAGE')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_HT1080 = create_RM(P, 'SuRE_HT1080', 'CAGE_HT1080', lad='LAD_HT1080')
+RM_K562 = create_RM(P, 'SuRE_K562', 'CAGE_K562', lad='LAD_K562')
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+RM_K562_RAMPAGE = create_RM(P, 'SuRE_K562', 'K562_RAMPAGE', lad='LAD_K562')
+RM_HT1080_RAMPAGE = create_RM(P, 'SuRE_HT1080', 'HT1080_RAMPAGE', lad='LAD_HT1080')
+RM_K562_DNAse = create_RM(P, 'SuRE_K562', 'DNAse_K562', lad='LAD_K562')
+RM_HT1080_DNAse = create_RM(P, 'SuRE_HT1080', 'DNAse_HT1080', lad='LAD_HT1080')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+P$LRS_K562 <- P$CAGE_K562 - approx(x=RM_K562$x.mean, y=RM_K562$y.ilad, xout=P$SuRE_K562, rule=2)$y
+P$LRS_HT1080 <- P$CAGE_HT1080 - approx(x=RM_HT1080$x.mean, y=RM_HT1080$y.ilad, xout=P$SuRE_HT1080, rule=2)$y
+
+P$LRS_HT1080_RAMPAGE <- P$HT1080_RAMPAGE - approx(x=RM_HT1080_RAMPAGE$x.mean, y=RM_HT1080_RAMPAGE$y.ilad, xout=P$SuRE_HT1080, rule=2)$y
+P$LRS_K562_RAMPAGE <- P$K562_RAMPAGE - approx(x=RM_K562_RAMPAGE$x.mean, y=RM_K562_RAMPAGE$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+P$LRS_K562_DNAse <- P$DNAse_K562 - approx(x=RM_K562_DNAse$x.mean, y=RM_K562_DNAse$y.ilad, xout=P$SuRE_K562, rule=2)$y
+P$LRS_HT1080_DNAse <- P$DNAse_HT1080 - approx(x=RM_HT1080_DNAse$x.mean, y=RM_HT1080_DNAse$y.ilad, xout=P$SuRE_HT1080, rule=2)$y
+
+
+lad_names_K562 = c(LAD=paste0('LAD; n=', table(P$LAD_K562)['1']),
+                   iLAD=paste0('iLAD; n=', table(P$LAD_K562)['0']))
+P$lad_K562_n = factor(ifelse(P$LAD_K562==1, lad_names_K562['LAD'], lad_names_K562['iLAD']))
+COL_lad_K562_n = COL_lad
+names(COL_lad_K562_n) = lad_names_K562
+
+lad_names_HT1080 = c(LAD=paste0('LAD; n=', table(P$LAD_HT1080)['1']),
+                     iLAD=paste0('iLAD; n=', table(P$LAD_HT1080)['0']))
+P$lad_HT1080_n = factor(ifelse(P$LAD_HT1080==1, lad_names_HT1080['LAD'], lad_names_HT1080['iLAD']))
+COL_lad_HT1080_n = COL_lad
+names(COL_lad_HT1080_n) = lad_names_HT1080
+
+RM_melt = melt(RM_GRO, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_K562['LAD'], lad_names_K562['iLAD'])
+ggplot(P, aes(x=SuRE_K562, y=GROcap_K562, color=lad_K562_n)) +
+    geom_point(data=P[P$LAD_K562==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_K562==1, ], size=0.5, alpha=0.2) +
+    ggtitle('GROcap vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(GROcap)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_K562_n)
+
+RM_melt = melt(RM_K562, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_K562['LAD'], lad_names_K562['iLAD'])
+ggplot(P, aes(x=SuRE_K562, y=CAGE_K562, color=lad_K562_n)) +
+    geom_point(data=P[P$LAD_K562==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_K562==1, ], size=0.5, alpha=0.2) +
+    ggtitle('CAGE vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(CAGE)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_K562_n)
+
+RM_melt = melt(RM_HT1080, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_HT1080['LAD'], lad_names_HT1080['iLAD'])
+ggplot(P, aes(x=SuRE_HT1080, y=CAGE_HT1080, color=lad_HT1080_n)) +
+    geom_point(data=P[P$LAD_HT1080==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_HT1080==1, ], size=0.5, alpha=0.2) +
+    ggtitle('CAGE vs SuRE HT1080') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(CAGE)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_HT1080_n)
+
+
+RM_melt = melt(RM_HT1080_RAMPAGE, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_HT1080['LAD'], lad_names_HT1080['iLAD'])
+ggplot(P, aes(x=SuRE_HT1080, y=HT1080_RAMPAGE, color=lad_HT1080_n)) +
+    geom_point(data=P[P$LAD_HT1080==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_HT1080==1, ], size=0.5, alpha=0.2) +
+    ggtitle('RAMPAGE vs SuRE HT1080') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(RAMPAGE)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_HT1080_n)
+
+RM_melt = melt(RM_K562_RAMPAGE, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_K562['LAD'], lad_names_K562['iLAD'])
+ggplot(P, aes(x=SuRE_K562, y=K562_RAMPAGE, color=lad_K562_n)) +
+    geom_point(data=P[P$LAD_K562==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_K562==1, ], size=0.5, alpha=0.2) +
+    ggtitle('RAMPAGE vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(RAMPAGE)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_K562_n)
+
+RM_melt = melt(RM_K562_DNAse, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_K562['LAD'], lad_names_K562['iLAD'])
+ggplot(P, aes(x=SuRE_K562, y=DNAse_K562, color=lad_K562_n)) +
+    geom_point(data=P[P$LAD_K562==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_K562==1, ], size=0.5, alpha=0.2) +
+    ggtitle('DNAse vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(DNAse)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_K562_n)
+
+RM_melt = melt(RM_HT1080_DNAse, measure.vars=c('y.ilad', 'y.lad'))
+RM_melt$variable = ifelse(RM_melt$variable=='y.lad', lad_names_HT1080['LAD'], lad_names_HT1080['iLAD'])
+ggplot(P, aes(x=SuRE_HT1080, y=DNAse_HT1080, color=lad_HT1080_n)) +
+    geom_point(data=P[P$LAD_HT1080==0, ], size=0.5, alpha=0.05) +
+    geom_point(data=P[P$LAD_HT1080==1, ], size=0.5, alpha=0.2) +
+    ggtitle('DNAse vs SuRE HT1080') +
+    theme_bw() +
+    geom_line(data=RM_melt, aes(x=x.mean, y=value, color=variable), size=1) +
+    labs(y='log10(DNAse)', x='log10(SuRE)') +
+    theme(legend.title=element_blank()) +
+    scale_color_manual(values=COL_lad_HT1080_n)
+```
+
+**conclusions:**
+
+Although the spread of the data is different between cell-types, this seems to have worked quite nicely. I think for both cell-types a cuttof for CAGE of 0.5 is reasonable.
+
+```{r}
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+P$class_K562 = classify(P$SuRE_K562, P$CAGE_K562, P$LRS_K562, P$LAD_K562, 1.25)
+P$class_HT1080 = classify(P$SuRE_HT1080, P$CAGE_HT1080, P$LRS_HT1080, P$LAD_HT1080, 1.25)
+P$class_K562_DNAse = classify(P$SuRE_K562, P$DNAse_K562, P$LRS_K562_DNAse, P$LAD_K562, 1)
+P$class_HT1080_DNAse = classify(P$SuRE_HT1080, P$DNAse_HT1080, P$LRS_HT1080_DNAse, P$LAD_HT1080, 1.75)
+
+## so do we have overlap between escapers from CAGE and GROcap
+
+length(which(P$class_K562=='escaper'&P$class_GROcap=='escaper'))
+
+
+class_names = paste0(levels(P$class_GROcap), '; n=',table(P$class_GROcap))
+names(class_names) = levels(P$class_GROcap)
+P$class_GROcap_n = P$class_GROcap
+levels(P$class_GROcap_n) = class_names
+COL_class_GROcap_n = COL_class[names(class_names)]
+names(COL_class_GROcap_n) = class_names
+
+p_classes = P[which(P$class_GROcap %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_K562, y=GROcap_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_GROcap_n), size=0.6) +
+    labs(y='log10(GROcap)', x='log10(SuRE)') +
+    theme_bw() +
+    ggtitle('GROcap vs SuRE K562') +
+    geom_line(data=RM_GRO, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_GROcap_n)
+
+class_names = paste0(levels(P$class_K562), '; n=',table(P$class_K562))
+names(class_names) = levels(P$class_K562)
+P$class_K562_n = P$class_K562
+levels(P$class_K562_n) = class_names
+COL_class_K562_n = COL_class[names(class_names)]
+names(COL_class_K562_n) = class_names
+
+p_classes = P[which(P$class_K562 %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_K562, y=CAGE_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_K562_n), size=0.6) +
+    labs(y='log10(CAGE)', x='log10(SuRE)') +
+    ggtitle('CAGE vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_K562, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_K562_n)
+
+
+class_names = paste0(levels(P$class_HT1080), '; n=',table(P$class_HT1080))
+names(class_names) = levels(P$class_HT1080)
+P$class_HT1080_n = P$class_HT1080
+levels(P$class_HT1080_n) = class_names
+COL_class_HT1080_n = COL_class[names(class_names)]
+names(COL_class_HT1080_n) = class_names
+
+p_classes = P[which(P$class_HT1080 %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_HT1080, y=CAGE_HT1080)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_HT1080_n), size=0.6) +
+    labs(y='log10(CAGE)', x='log10(SuRE)') +
+    ggtitle('CAGE vs SuRE HT1080') +
+    theme_bw() +
+    geom_line(data=RM_HT1080, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_HT1080_n)
+
+
+class_names = paste0(levels(P$class_K562_DNAse), '; n=',table(P$class_K562_DNAse))
+names(class_names) = levels(P$class_K562_DNAse)
+P$class_K562_DNAse_n = P$class_K562_DNAse
+levels(P$class_K562_DNAse_n) = class_names
+COL_class_K562_DNAse_n = COL_class[names(class_names)]
+names(COL_class_K562_DNAse_n) = class_names
+
+p_classes = P[which(P$class_K562_DNAse %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_K562, y=DNAse_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_K562_DNAse_n), size=0.6) +
+    labs(y='log10(DNAse)', x='log10(SuRE)') +
+    ggtitle('DNAse vs SuRE K562') +
+    theme_bw() +
+    geom_line(data=RM_K562_DNAse, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_K562_DNAse_n)
+
+class_names = paste0(levels(P$class_HT1080_DNAse), '; n=',table(P$class_HT1080_DNAse))
+names(class_names) = levels(P$class_HT1080_DNAse)
+P$class_HT1080_DNAse_n = P$class_HT1080_DNAse
+levels(P$class_HT1080_DNAse_n) = class_names
+COL_class_HT1080_DNAse_n = COL_class[names(class_names)]
+names(COL_class_HT1080_DNAse_n) = class_names
+
+p_classes = P[which(P$class_HT1080_DNAse %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_HT1080, y=DNAse_HT1080)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_HT1080_DNAse_n), size=0.6) +
+    labs(y='log10(DNAse)', x='log10(SuRE)') +
+    ggtitle('DNAse vs SuRE HT1080') +
+    theme_bw() +
+    geom_line(data=RM_HT1080_DNAse, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_HT1080_DNAse_n)
+```
+
+**conclusion:**
+There are about 100 promoters that are in just one escaper set. Let's hope it does not change the conclusions too much.
+
+## DNAseq and CAGE combined
+
+let's see how our grocap-defined groups can be split based on a combination of CAGE and DNAse.
+
+```{r}
+p_classes = P[which(P$class_GROcap %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=DNAse_K562, y=CAGE_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_GROcap_n), size=0.6) +
+    labs(y='log10(CAGE)', x='log10(DNAse)') +
+    ggtitle('CAGE vs DNAse K562') +
+    theme_bw() +
+    # geom_line(data=RM_GRO, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_GROcap_n)
+
+p_lad = P[which(P$LAD_HT1080 == 1),]
+ggplot(P, aes(x=DNAse_HT1080, y=CAGE_HT1080)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_lad, aes(color=class_GROcap), size=0.6) +
+    labs(y='log10(CAGE)', x='log10(DNAse)') +
+    ggtitle('CAGE vs DNAse HT1080') +
+    theme_bw() +
+    # # geom_line(data=RM_GRO, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    # theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class)
+
+
+
+```
+**conclusion:**
+Combining CAGE with DNAse seems to work really well, although there seems to be quite some differences between the HT1080 and K562 data.
+
+## classify with 3 dimensions
+
+```{r}
+classify_3d <- function(sure, exp_y, exp_z, lrs_y, lad, exp_cut_y, exp_cut_z){
+    INACT<- sure< -0.3 & lad & exp_y < exp_cut_y  & exp_z < exp_cut_z #inactive
+    NREP<- sure> 0 & lrs_y > -0.5 & lad & exp_y > exp_cut_y  & exp_z > exp_cut_z #not repressed
+    REP<- sure> 0.3 & lrs_y < -0.75  & lad  & exp_y < exp_cut_y  & exp_z < exp_cut_z #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+
+P$class_K562_3D = classify_3d(P$SuRE_K562,
+                              P$CAGE_K562, P$DNAse_K562,
+                              P$LRS_K562, P$LAD_K562, 1.25, 0.75)
+
+P$class_HT1080_3D = classify_3d(P$SuRE_HT1080,
+                                P$CAGE_HT1080, P$DNAse_HT1080,
+                                P$LRS_HT1080, P$LAD_HT1080, 1.25, 1.75)
+
+print(table(P$class_K562_3D))
+
+print(table(P$class_HT1080_3D))
+
+class_names = paste0(levels(P$class_K562_3D), '; n=',table(P$class_K562_3D))
+names(class_names) = levels(P$class_K562_3D)
+P$class_K562_3D_n = P$class_K562_3D
+levels(P$class_K562_3D_n) = class_names
+COL_class_K562_3D_n = COL_class[names(class_names)]
+names(COL_class_K562_3D_n) = class_names
+
+
+p_classes = P[which(P$class_K562_3D %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_K562, y=GROcap_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_K562_3D_n), size=0.6) +
+    labs(y='log10(GROcap)', x='log10(SuRE)') +
+    theme_bw() +
+    ggtitle('GROcap vs SuRE K562\nK562 3D classification') +
+    geom_line(data=RM_GRO, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_K562_3D_n)
+
+
+class_names = paste0(levels(P$class_HT1080_3D), '; n=',table(P$class_HT1080_3D))
+names(class_names) = levels(P$class_HT1080_3D)
+P$class_HT1080_3D_n = P$class_HT1080_3D
+levels(P$class_HT1080_3D_n) = class_names
+COL_class_HT1080_3D_n = COL_class[names(class_names)]
+names(COL_class_HT1080_3D_n) = class_names
+
+
+p_classes = P[which(P$class_K562_3D %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_K562, y=GROcap_K562)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_HT1080_3D_n), size=0.6) +
+    labs(y='log10(GROcap)', x='log10(SuRE)') +
+    theme_bw() +
+    ggtitle('GROcap vs SuRE K562\nHT1080 3D classification') +
+    geom_line(data=RM_GRO, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_HT1080_3D_n)
+
+```
+**conclusion:**
+In general this seems to perform well. Unfortunately a lot of repressed are lost. Hopefully there is enough left to do meaningful analysis
+
+
+```{r, fig.width=10, fig.height=8}
+p_class = P[P$class_GROcap!='boundary',]
+ggplot(p_class, aes(x=class_GROcap, y=tissues_expressed, color=class_GROcap_n)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_K562 != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    ggtitle('classification GROcap K562 tissues expressed') +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_GROcap_n) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+p_class = P[P$class_K562!='boundary',]
+ggplot(p_class, aes(x=class_K562, y=tissues_expressed, color=class_K562_n)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_K562 != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    ggtitle('classification CAGE K562 tissues expressed') +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_K562_n) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_class = P[P$class_HT1080!='boundary',]
+ggplot(p_class, aes(x=class_HT1080, y=tissues_expressed, color=class_HT1080_n)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_HT1080 != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    ggtitle('classification CAGE HT1080 tissues expressed') +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_HT1080_n) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_class = P[P$class_K562_3D!='boundary',]
+ggplot(p_class, aes(x=class_K562_3D, y=tissues_expressed, color=class_K562_3D_n)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_K562_3D != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    ggtitle('classification CAGE and DNAse K562 tissues expressed') +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_K562_3D_n) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_class = P[P$class_HT1080_3D!='boundary',]
+ggplot(p_class, aes(x=class_HT1080_3D, y=tissues_expressed, color=class_HT1080_3D_n)) +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class[p_class$class_HT1080_3D != 'iLAD', ],
+               position=position_jitter(width=0.4),
+               alpha=0.5) +
+    ggtitle('classification CAGE and DNAse HT1080 tissues expressed') +
+    theme_bw() +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class_HT1080_3D_n) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**conclusion:**
+
+Not much has changed about this figure and HT1080 seems to agree.
+
+```{r, fig.width=10, fig.height=10}
+chrom_gr = import.bed('../../../data/tracks/hg19/wgEncodeBroadHmmK562HMM.bed')
+COL_chromatin = unique(data.frame(chrom_gr)[,c('name', 'itemRgb')])
+COL_chrom = COL_chromatin[,2]
+
+names(COL_chrom) = COL_chromatin[,1]
+
+P$chrom_hmm = chrom_gr[nearest(tss_gr, chrom_gr)]$name
+
+chrom_levels = unique(P$chrom_hmm)
+chrom_order = order(unlist(lapply(chrom_levels, function(x){as.numeric(strsplit(x,'_')[[1]][1])})))
+P$chrom_hmm = factor(P$chrom_hmm, levels=chrom_levels[chrom_order])
+
+ggplot(P[P$class_GROcap!='boundary',], aes(x=class_GROcap_n, fill=chrom_hmm)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter for GROcap based classes in K562') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+
+ggplot(P[P$class_K562!='boundary',], aes(x=class_K562_n, fill=chrom_hmm)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter for CAGE based classes in K562') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+
+ggplot(P[P$class_HT1080!='boundary',], aes(x=class_HT1080_n, fill=chrom_hmm)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter for CAGE based classes in HT1080') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+
+ggplot(P[P$class_K562_3D!='boundary',], aes(x=class_K562_3D_n, fill=chrom_hmm)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter for CAGE and DNAse based classes in K562') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+
+ggplot(P[P$class_HT1080_3D!='boundary',], aes(x=class_HT1080_3D_n, fill=chrom_hmm)) +
+    geom_bar(color='black', position='fill') +
+    theme_bw() +
+    scale_fill_manual(values=COL_chrom) +
+    scale_y_continuous(labels=percent, limits=c(0,1)) +
+    ylab('percent') +
+    ggtitle('chromatin state near TSS of promoter for CAGE and DNAse based classes in HT1080') +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.title=element_blank())
+```
+
+**conclusion:**
+The GROcap-based classification seems to agree a lot more with the chromatin states than just CAGE, but the 3D classification seems to only select active chromatin states for escapers.
+
+## DAM-ID
+Now let's take a look at the dip.
+
+```{r}
+load("../raw_data/CdG140714humanLmnb1wK562.rData")
+
+dam_K562 = makeGRangesFromDataFrame(data.frame(allHumanAvHg19[,c(1:4)],
+                                               score=allHumanAvHg19$K5),
+                                      keep.extra.columns=T)
+mean_lad_K562 = mean(allHumanAvHg19$K5[allHumanStateHg19$K6==2])
+mean_ilad_K562 = mean(allHumanAvHg19$K5[allHumanStateHg19$K6==1])
+
+dam_HT1080 = makeGRangesFromDataFrame(data.frame(allHumanAvHg19[,c(1:4)],
+                                                 score=allHumanAvHg19$HT),
+                                      keep.extra.columns=T)
+mean_lad_HT1080 = mean(allHumanAvHg19$HT[allHumanStateHg19$HT==2])
+mean_ilad_HT1080 = mean(allHumanAvHg19$HT[allHumanStateHg19$HT==1])
+
+F_window = 22000
+tss_long = tss_gr[width(gene_gr) > F_window]
+
+plot_dip <- function(tss_gr, dam_gr, max_gap, P, class_name, mean_lad, mean_ilad, COL, COL_lad){
+  h = findOverlaps(tss_gr, dam_gr, maxgap=max_gap)
+  strand_tss = strand(tss_gr[from(h)])
+  start_tss = start(tss_gr[from(h)])
+  end_tss = end(tss_gr[from(h)])
+  mid_dam = (start(dam_gr[to(h)]) + end(dam_gr[to(h)])) / 2
+  oPOS = ifelse(strand_tss=='+',
+                mid_dam - start_tss -F,
+                end_tss - mid_dam -F)
+  oVAL = score(dam_gr[to(h)])
+  oNAME = names(tss_gr[from(h)])
+  plot_list = list()
+  for (class in names(COL)){
+    s = P[which(P[,class_name]==class), 'name']
+    w = oNAME %in% s
+    subPOS = oPOS[w]
+    subVAL = oVAL[w]
+    o = order(subPOS)
+    subPOS<-subPOS[o]
+    subVAL<-subVAL[o]
+    wsize<-floor(length(subPOS)/25) #4% of all datapoints in the set
+    if(!wsize %% 2) {wsize<-wsize+1} #must be odd
+    plot_list[[class]] = ggplot(data.frame(pos=subPOS, lam=subVAL), aes(x=pos, y=lam)) +
+                            geom_point(size=0.1,alpha=0.1,color=COL[class]) +
+                            geom_line(data=data.frame(pos=subPOS, lam=runmed(Rle(subVAL), k=wsize, endrule='constant')),color=COL[class]) +
+                            ylim(-2,3) +
+                            geom_hline(yintercept=mean_lad, color=COL_lad['LAD'],
+                                       linetype='dotdash', size=0.5) +
+                            geom_hline(yintercept=mean_ilad, color=COL_lad['iLAD'],
+                                       linetype='dotdash', size=0.5) +
+                            ggtitle(class)
+  }
+  return(plot_list)
+}
+
+plot_K562 = plot_dip(tss_long, dam_K562, F_window, P, 'class_K562_3D', mean_lad_K562,
+                     mean_ilad_K562, COL, COL_lad)
+plot_HT1080 = plot_dip(tss_long, dam_HT1080, F_window, P, 'class_HT1080_3D', mean_lad_HT1080,
+                       mean_ilad_HT1080, COL, COL_lad)
+
+do.call(grid.arrange, c(plot_K562, top='K562', nrow=1))
+do.call(grid.arrange, c(plot_HT1080, top='HT1080', nrow=1))
+```
+
+```{r}
+
+
+p_most_active = ddply(P, .(ensembl_gene_id), function(x){
+    if (nrow(x)==1){
+        result = x[1,]
+    } else {
+        result = x[order(x$GROcap_K562, decreasing=T)[1],]
+    }
+    return(result)
+  })
+
+m_active = match(p_most_active$name, P$name)
+
+
+p_most_down = ddply(P[!is.na(P$ensembl_gene_id),], .(ensembl_gene_id), function(x){
+    if (nrow(x)==1){
+        result = x[1,]
+    } else if (all(x$strand=='+')){
+        result = x[order(x$tss, decreasing=T)[1],]
+    } else if (all(x$strand=='-')){
+        result = x[order(x$tss)[1],]
+    } else {
+        print('huh???')
+        print(x)
+        result = x[1,]
+    }
+    return(result)
+  })
+
+m_most_down = match(p_most_down$name, P$name)
+
+
+p_most_up = ddply(P[!is.na(P$ensembl_gene_id),], .(ensembl_gene_id), function(x){
+    if (nrow(x)==1){
+        result = x[1,]
+    } else if (all(x$strand=='+')){
+        result = x[order(x$tss, decreasing=F)[1],]
+    } else if (all(x$strand=='-')){
+        result = x[order(x$tss)[1],]
+    } else {
+        print('huh???')
+        print(x)
+        result = x[1,]
+    }
+    return(result)
+  })
+m_most_up = match(p_most_up$name, P$name)
+
+```
+
+
+```{r}
+
+rnaseq_rep1 = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/K562_rna_rep2_ENCFF222NCB.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+
+transcript_table = read.table('../raw_data/K562_rna_rep1_transcripts_ENCFF853QUL.tsv',
+                               header=T, row.names=1, stringsAsFactors=F)
+
+p_match = transcript_table[P$name, 'gene_id']
+
+fpkm_rep1 = rnaseq_rep1[p_match, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[p_match, 'pme_FPKM']
+
+cor = cor(fpkm_rep1, fpkm_rep2)
+ggplot(data.frame(rep1=fpkm_rep1, rep2=fpkm_rep2),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE rna-seq\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+fpkm_vec = pseudo_log10(rowMeans(cbind(rnaseq_rep1$pme_FPKM,rnaseq_rep2$pme_FPKM)))
+names(fpkm_vec)  = rownames(rnaseq_rep1)
+
+P$K562_fpkm = pseudo_log10(rowMeans(cbind(fpkm_rep1,fpkm_rep2)))
+
+p_class = P[P$class_K562_3D%in%c('repressed', 'escaper', 'inactive'), ]
+ggplot(P[P$class_K562_3D!='boundary', ], aes(x=class_K562_3D,
+                                             y=K562_fpkm,
+                                             color=class_K562_3D_n)) +
+    ggtitle('K562 polyA selected total RNA') +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class, position=position_jitter(width=0.5),
+               alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression') +
+    scale_color_manual(values=COL_class_K562_3D_n) +
+    theme_bw()
+
+
+
+rnaseq_rep1 = read.table('../raw_data/HT1080_cytosol_rna_rep1_ENCFF426EAU.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/HT1080_cytosol_rna_rep2_ENCFF546LKT.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+
+fpkm_rep1 = rnaseq_rep1[p_match, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[p_match, 'pme_FPKM']
+
+cor = cor(fpkm_rep1, fpkm_rep2)
+ggplot(data.frame(rep1=fpkm_rep1, rep2=fpkm_rep2),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE HT1080 cytosolic fraction rna-seq\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+fpkm_vec = pseudo_log10(rowMeans(cbind(rnaseq_rep1$pme_FPKM,rnaseq_rep2$pme_FPKM)))
+names(fpkm_vec)  = rownames(rnaseq_rep1)
+
+P$HT1080_cytosol = pseudo_log10(rowMeans(cbind(fpkm_rep1,fpkm_rep2)))
+
+p_class = P[P$class_HT1080_3D%in%c('repressed', 'escaper', 'inactive'), ]
+
+
+rnaseq_rep1 = read.table('../raw_data/HT1080_nuclear_rna_rep1_ENCFF965MCV.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/HT1080_nuclear_rna_rep2_ENCFF728YKK.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+
+fpkm_rep1 = rnaseq_rep1[p_match, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[p_match, 'pme_FPKM']
+
+cor = cor(fpkm_rep1, fpkm_rep2)
+ggplot(data.frame(rep1=fpkm_rep1, rep2=fpkm_rep2),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE HT1080 nuclear fraction rna-seq\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+fpkm_vec = pseudo_log10(rowMeans(cbind(rnaseq_rep1$pme_FPKM,rnaseq_rep2$pme_FPKM)))
+names(fpkm_vec)  = rownames(rnaseq_rep1)
+
+P$HT1080_nuclear = pseudo_log10(rowMeans(cbind(fpkm_rep1,fpkm_rep2)))
+
+p_class = P[P$class_HT1080_3D%in%c('repressed', 'escaper', 'inactive'), ]
+
+
+rnaseq_rep1 = read.table('../raw_data/HT1080_total_rna_rep1_ENCFF469UTN.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/HT1080_total_rna_rep2_ENCFF102BYU.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+
+fpkm_rep1 = rnaseq_rep1[p_match, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[p_match, 'pme_FPKM']
+
+cor = cor(fpkm_rep1, fpkm_rep2)
+ggplot(data.frame(rep1=fpkm_rep1, rep2=fpkm_rep2),
+       aes(x=log10(rep1), y=log10(rep2))) +
+    ggtitle(paste('ENCODE HT1080 total fraction rna-seq\ncor=', cor)) +
+    geom_point(size=0.1, alpha=0.1)
+
+fpkm_vec = pseudo_log10(rowMeans(cbind(rnaseq_rep1$pme_FPKM,rnaseq_rep2$pme_FPKM)))
+names(fpkm_vec)  = rownames(rnaseq_rep1)
+
+P$HT1080_total = pseudo_log10(rowMeans(cbind(fpkm_rep1,fpkm_rep2)))
+
+p_class = P[P$class_HT1080_3D%in%c('repressed', 'escaper', 'inactive'), ]
+
+ggplot(P[P$class_HT1080_3D!='boundary', ], aes(x=class_HT1080_3D,
+                                               y=HT1080_cytosol,
+                                               color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq cytosolic fraction') +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class, position=position_jitter(width=0.5),
+               alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression cytosolic fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+ggplot(P[P$class_HT1080_3D!='boundary', ], aes(x=class_HT1080_3D,
+                                               y=HT1080_nuclear,
+                                               color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq nuclear fraction') +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class, position=position_jitter(width=0.5),
+               alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression nuclear fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+
+
+ggplot(P[P$class_HT1080_3D!='boundary', ], aes(x=class_HT1080_3D,
+                                               y=HT1080_total,
+                                               color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq total fraction') +
+    geom_violin(alpha=0.3) +
+    geom_point(data=p_class, position=position_jitter(width=0.5),
+               alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression total fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+
+
+p_matched = matchSet(P[P$class_HT1080_3D %in% c('escaper', 'iLAD'), ],
+                     'class_HT1080_3D', 'escaper', 'CAGE_HT1080')
+
+ggplot(p_matched, aes(x=class_HT1080_3D, y=HT1080_cytosol,
+                      color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq cytosolic fraction\nmatched on CAGE') +
+    geom_violin(alpha=0.3) +
+    geom_point(position=position_jitter(width=0.5),
+            alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression cytosolic fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+
+ggplot(p_matched, aes(x=class_HT1080_3D, y=HT1080_nuclear,
+                      color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq nuclear fraction\nmatched on CAGE') +
+    geom_violin(alpha=0.3) +
+    geom_point(position=position_jitter(width=0.5),
+               alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression nuclear fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+
+
+ggplot(p_matched, aes(x=class_HT1080_3D, y=HT1080_total,
+                      color=class_HT1080_3D_n)) +
+    ggtitle('HT1080 RNA-seq total fraction\nmatched on CAGE') +
+    geom_violin(alpha=0.3) +
+    geom_point(position=position_jitter(width=0.5),
+                alpha=0.3, size=0.3) +
+    ylab('poly-A RNA expression total fraction') +
+    scale_color_manual(values=COL_class_HT1080_3D_n) +
+    theme_bw()
+```
+
+**conclusion:**
+
+Thought there might be a difference in distribution of RNA across the different
+fractions between RNA produced from LAD promoters as compared to iLAD promoters.
+This does not seem to be the case.
+
+
+```{r}
+
+load('../raw_data/prom_window_pol2a.rda')
+count_file_vec = list.files('../raw_data/',pattern='POL2')
+count_file_vec = grep('prom_window', count_file_vec, value=T, invert=T)
+
+count_list = lapply(count_file_vec, function(x){
+        gr = import.bed(paste0('../raw_data/', x))
+        score(gr) = start(gr$thick) / width(gr)
+        return(gr)
+    })
+name_list = lapply(strsplit(count_file_vec, '_'), function(x){
+    if (x[1]=='gene'){
+        r = paste(x[2:4], collapse='_')
+    } else {
+        r = paste(x[1:3], collapse='_')
+    }
+    return(r)
+})
+names(count_list) = unlist(name_list)
+
+
+score_table = do.call(cbind,lapply(count_list,function(x){score(x)}))
+
+tssr_POL2A = rowMeans(score_table[,c('tssr_POL2A_rep1', 'tssr_POL2A_rep2')]) /
+             rowMeans(score_table[,c('tssr_POL2A_ctrl1', 'tssr_POL2A_ctrl2')])
+
+tssr_POL2AS2 = rowMeans(score_table[,c('tssr_POL2AphosphoS2_rep1',
+                                       'tssr_POL2AphosphoS2_rep2')]) /
+               score_table[,'tssr_POL2AphosphoS2_ctrl']
+
+tssr_POL2AS5 = rowMeans(score_table[,c('tssr_POL2AphosphoS5_rep1',
+                                       'tssr_POL2AphosphoS5_rep2')]) /
+               rowMeans(score_table[,c('tssr_POL2AphosphoS5_ctrl1',
+                                       'tssr_POL2AphosphoS5_ctrl2')])
+
+body_POL2A = rowMeans(score_table[,c('body_POL2A_rep1', 'body_POL2A_rep2')]) /
+             rowMeans(score_table[,c('body_POL2A_ctrl1', 'body_POL2A_ctrl2')])
+
+body_POL2AS2 = rowMeans(score_table[,c('body_POL2AphosphoS2_rep1',
+                                       'body_POL2AphosphoS2_rep2')]) /
+               score_table[,'body_POL2AphosphoS2_ctrl']
+
+body_POL2AS5 = rowMeans(score_table[,c('body_POL2AphosphoS5_rep1',
+                                       'body_POL2AphosphoS5_rep2')]) /
+               rowMeans(score_table[,c('body_POL2AphosphoS5_ctrl1',
+                                       'body_POL2AphosphoS5_ctrl2')])
+
+tssr_match = match(P$name, count_list[['tssr_POL2A_rep1']]$name)
+body_match = match(P$name, count_list[['body_POL2A_rep1']]$name)
+
+
+P$tssr_POL2A = tssr_POL2A[tssr_match]
+P$tssr_POL2AS2 = tssr_POL2AS2[tssr_match]
+P$tssr_POL2AS5 = tssr_POL2AS5[tssr_match]
+P$body_POL2A = body_POL2A[body_match]
+P$body_POL2AS2 = body_POL2AS2[body_match]
+P$body_POL2AS5 = body_POL2AS5[body_match]
+P$PI_POL2A = P$tssr_POL2A / P$body_POL2A
+P$PI_POL2AS2 = P$tssr_POL2AS2 / P$body_POL2AS2
+P$PI_POL2AS5 = P$tssr_POL2AS5 / P$body_POL2AS5
+P$PI_POL2AS2vs5 = P$tssr_POL2AS5 / P$body_POL2AS2
+P$body_POL2AS2vsAll = P$body_POL2AS2 / P$body_POL2A
+P$tssr_POL2AS5vsAll = P$tssr_POL2AS5 / P$tssr_POL2A
+
+
+this_p = P[m_most_down,]
+
+p_expressed = matchSet(this_p[which(this_p$class_K562_3D %in% c('escaper', 'iLAD')),],
+                       'class_K562_3D', 'escaper', 'CAGE_K562')
+
+p_expressed$col = p_expressed$class_K562_3D
+levels(p_expressed$col) = paste0(levels(p_expressed$col),'; n=',
+                                 table(p_expressed[, 'col']))
+COL_class_n_pol = COL_class_K562_3D_n
+names(COL_class_n_pol) = levels(p_expressed$col)
+
+
+ggplot(melt(p_expressed, measure.vars=c('tssr_POL2A', 'body_POL2A')),
+       aes(x=class_K562_3D, y=log2(value + 0.1), color=col)) +
+    ylab('log2(POL2A / ctrl)') +
+    geom_violin(alpha=0.3) +
+    geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+    scale_color_manual(values=COL_class_n_pol) + facet_wrap(~variable)  +
+    theme_bw() +
+    theme(legend.title=element_blank())
+
+
+p_expressed = matchSet(this_p[which(this_p$class_K562_3D %in% c('escaper', 'iLAD')),],
+                       'class_GROcap', 'escaper', 'GROcap_K562')
+
+p_expressed$col = p_expressed$class_GROcap
+levels(p_expressed$col) = paste0(levels(p_expressed$col),'; n=',
+                                 table(p_expressed[, 'col']))
+COL_class_n_pol = COL_class_GROcap_n
+names(COL_class_n_pol) = levels(p_expressed$col)
+
+
+ggplot(melt(p_expressed, measure.vars=c('tssr_POL2A', 'body_POL2A')),
+       aes(x=class_GROcap, y=log2(value + 0.1), color=col)) +
+    ylab('log2(POL2A / ctrl)') +
+    geom_violin(alpha=0.3) +
+    geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+    scale_color_manual(values=COL_class_n_pol) + facet_wrap(~variable)  +
+    theme_bw() +
+    theme(legend.title=element_blank())
+
+```
+**conclusion**
+
+The previous observations made concerning the level of POL2 on the TSS vs the
+gene body are also true for the new classification:
+Even though the same amount of POL2 is bound to the TSS, the gene-body has a lot
+less POL2 signal.
+
+
+```{r}
+
+wilcox_affinity <- function(x_affinity, y_affinity, groups, tf_table, id_vec=NULL){
+  if (is.null(id_vec)){
+    id_vec = colnames(x_affinity)
+  }  
+  fit = mclapply(id_vec, function(id){
+    x = x_affinity[,id]
+    y = y_affinity[,id]
+    r = rank(c(x,y))
+    r_x = r[1:length(x)]
+    r_y = r[-(1:length(x))]
+    mean_r = c(mean(r_x), mean(r_y))
+    direction = groups[which(mean_r==max(mean_r))]
+    if (length(direction) == 2){
+      direction = 'unchanged'
+    }
+    median_fc = median(x) / median(y)
+    mean_fc = mean(x) / mean(y)
+    rank_fc = mean_r[1] / mean_r[2]
+    if (length(which(x==0))/length(x)>0.3 &
+        length(which(y==0))/length(y)>0.3){
+      w = chisq.test(rbind(table(x==0), table(y==0)))
+    } else {
+      w = wilcox.test(x, y)
+    }
+    return(list(w,direction, median_fc, mean_fc, rank_fc))
+  })
+  p_vec = unlist(lapply(fit, function(x){ x[[1]]$p.value}))
+  p_adjust = p.adjust(p_vec, method='fdr')
+  direction = lapply(fit, function(x){ x[[2]]})
+  median_fc =  lapply(fit, function(x){ x[[3]]})
+  mean_fc =  lapply(fit, function(x){ x[[4]]})
+  rank_fc =  lapply(fit, function(x){ x[[5]]})
+  result_table = cbind(id=id_vec,
+                       tf_table[id_vec, ],
+                       direction=unlist(direction),
+                       p_adjust = p_adjust,
+                       median_fc = unlist(median_fc),
+                       mean_fc = unlist(mean_fc),
+                       rank_fc = unlist(rank_fc), stringsAsFactors=F)
+  return(result_table)
+}
+```
+```{r}
+tissues_expressed = read.table('../../../data/fantom/max_tissues_expressed.txt.gz',
+                               sep='\t', header=T, stringsAsFactors=T)
+
+aff_table_jaspar = read.table('../raw_data/jaspar_affinity_300_300/seq_psam.dat', stringsAsFactors=F)
+tf_table_jaspar = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1, stringsAsFactors=F)
+colnames(tf_table_jaspar) = c('name', 'species', 'class', 'family')
+tf_translation = read.table('../raw_data/tf_translation.txt', stringsAsFactors=F)
+
+names(fpkm_vec) = gsub('[.][0-9]+','',names(fpkm_vec))
+tf_translation$K562_fpkm = fpkm_vec[tf_translation$gene_id]
+
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+tf_table_jaspar$KBM7_essential = KBM7_essential[tf_table_jaspar$gene_id, 'selected']
+
+tf_type = read.table('../raw_data/12859_2016_1349_MOESM2_ESM.csv',sep='\t', header=T, stringsAsFactors=F)
+match_vec = match(toupper(tf_table_jaspar$name), tf_type$Symbol)
+tf_table_jaspar$tf_type = NA
+tf_table_jaspar[!is.na(match_vec), 'tf_type'] = tf_type[match_vec[!is.na(match_vec)], 'Chromatin.Opening.Type']
+## author states the folowing about the types:
+# The classification is shown as
+# Chromatin Opening Type. The experimentally determined
+# classifications used for training the classifiers are shown in lowercase (e.g. Pioneer), whereas
+# the classifications described here are shown in UPPERCASE (e.g. PIONEER
+pioneer_index = read.table('../raw_data/Sherwood_suplement_2_pioneer_index.csv',sep='\t', header=T, stringsAsFactors=F)
+pioneer_index$id = unlist(lapply(pioneer_index$Motif, function(motif){strsplit(motif, ' ')[[1]][1]}))
+match_vec = match(rownames(tf_table_jaspar), pioneer_index$id)
+tf_table_jaspar$pioneer_index = NaN
+tf_table_jaspar[!is.na(match_vec), 'pioneer_index'] = pioneer_index[match_vec[!is.na(match_vec)], 'Pioneer.Index']
+tf_table_jaspar$social_index = NaN
+tf_table_jaspar[!is.na(match_vec), 'social_index'] = pioneer_index[match_vec[!is.na(match_vec)], 'Social.Index']
+tf_table_jaspar$opening_index = NaN
+tf_table_jaspar[!is.na(match_vec), 'opening_index'] = pioneer_index[match_vec[!is.na(match_vec)], 'Chromatin.Opening.Index']
+tf_table_jaspar$K562_opening_index = NaN
+tf_table_jaspar[!is.na(match_vec), 'K562_opening_index'] = pioneer_index[match_vec[!is.na(match_vec)], 'K562.Chromatin.Opening.Index']
+
+
+
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+tf_translation$KBM7_essential = KBM7_essential[tf_translation$gene_id, 'selected']=='YES'
+tf_translation$HAP1_essential = HAP1_essential[tf_translation$gene_id, 'selected']=='YES'
+
+tf_expression = ddply(tf_translation,.(name),
+                      function(x, te){
+                          name=x$name[1]
+                          ens = which(te$ensembl_gene_id%in%x$gene_id)
+                          if (length(ens) > 0){
+                            tissues= min(te[ens,'tissues_expressed'])
+                          } else {
+                            tissues = NA
+                          }
+                          c(expression=min(x$K562_fpkm),
+                            KBM7_essential=any(x$KBM7_essential),
+                            HAP1_essential=any(x$HAP1_essential),
+                            tissues_expressed=tissues)
+                      }, te=tissues_expressed)
+tf_table_jaspar$expression = NaN
+tf_match = match(tf_expression$name, tf_table_jaspar$name)
+tf_table_jaspar$expression[tf_match] = tf_expression$expression
+tf_table_jaspar$tissues_expressed = NaN
+tf_table_jaspar$tissues_expressed[tf_match] = tf_expression$tissues_expressed
+tf_table_jaspar$KBM7_essential = NA
+tf_table_jaspar$KBM7_essential[tf_match] = tf_expression$KBM7_essential
+tf_table_jaspar$HAP1_essential = NA
+tf_table_jaspar$HAP1_essential[tf_match] = tf_expression$HAP1_essential
+
+
+
+id_vec = colnames(aff_table_jaspar) = gsub('.xml','', colnames(aff_table_jaspar))
+```
+
+```{r}
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ], 'class_GROcap', 'escaper', 'SuRE_K562')
+escaper_affinity_GRO = aff_table_jaspar[matched_evsr[which(matched_evsr$class_GROcap=='escaper'),'name'],]
+repressed_affinity_GRO = aff_table_jaspar[matched_evsr[which(matched_evsr$class_GROcap=='repressed'),'name'],]
+evsr_jaspar_GRO = wilcox_affinity(escaper_affinity_GRO, repressed_affinity_GRO, c('escaper', 'repressed'), tf_table_jaspar, id_vec)
+write.table(evsr_jaspar_GRO, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_all_matched_300_300_GROcap.txt')
+
+evsr_jaspar_sig_GRO = evsr_jaspar_GRO[which(evsr_jaspar_GRO$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_GRO$direction=='repressed',
+                                               evsr_jaspar_GRO$mean_fc < 1,
+                                               evsr_jaspar_GRO$mean_fc > 1) &
+                                        evsr_jaspar_GRO$expression > 0), ]
+write.table(evsr_jaspar_sig_GRO, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_sig_matched_300_300_GROcap.txt')
+
+matched_evsr = matchSet(P[P$class_K562_3D%in%c('repressed', 'escaper'), ], 'class_K562_3D', 'escaper', 'SuRE_K562')
+escaper_affinity_K562 = aff_table_jaspar[matched_evsr[which(matched_evsr$class_K562_3D=='escaper'),'name'],]
+repressed_affinity_K562 = aff_table_jaspar[matched_evsr[which(matched_evsr$class_K562_3D=='repressed'),'name'],]
+evsr_jaspar_K562 = wilcox_affinity(escaper_affinity_K562, repressed_affinity_GRO, c('escaper', 'repressed'), tf_table_jaspar, id_vec)
+write.table(evsr_jaspar_K562, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_all_matched_300_300_3D_K562.txt')
+
+evsr_jaspar_sig_K562 = evsr_jaspar_K562[which(evsr_jaspar_K562$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_K562$direction=='repressed',
+                                               evsr_jaspar_K562$mean_fc < 1,
+                                               evsr_jaspar_K562$mean_fc > 1) &
+                                        evsr_jaspar_K562$expression > 0), ]
+write.table(evsr_jaspar_sig_K562, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_sig_matched_300_300_3D_K562.txt')
+
+
+matched_evsr = matchSet(P[P$class_HT1080_3D%in%c('repressed', 'escaper'), ], 'class_HT1080_3D', 'escaper', 'SuRE_HT1080')
+escaper_affinity_HT1080 = aff_table_jaspar[matched_evsr[which(matched_evsr$class_HT1080_3D=='escaper'),'name'],]
+repressed_affinity_HT1080 = aff_table_jaspar[matched_evsr[which(matched_evsr$class_HT1080_3D=='repressed'),'name'],]
+evsr_jaspar_HT1080 = wilcox_affinity(escaper_affinity_HT1080, repressed_affinity_HT1080, c('escaper', 'repressed'), tf_table_jaspar, id_vec)
+write.table(evsr_jaspar_HT1080, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_all_matched_300_300_3D_HT1080.txt')
+
+evsr_jaspar_sig_HT1080 = evsr_jaspar_HT1080[which(evsr_jaspar_HT1080$p_adjust < 0.05 &
+                                        ifelse(evsr_jaspar_HT1080$direction=='repressed',
+                                               evsr_jaspar_HT1080$mean_fc < 1,
+                                               evsr_jaspar_HT1080$mean_fc > 1) &
+                                        evsr_jaspar_HT1080$expression > 0), ]
+write.table(evsr_jaspar_sig_HT1080, sep='\t',row.names=F, file='cl20170622_evsr_aff_jaspar_sig_matched_300_300_3D_HT1080.txt')
+```
