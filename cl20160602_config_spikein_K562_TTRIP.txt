@@ -1,0 +1,90 @@
+# Typical structures of Normalization and Expression reads
+# 
+# format_Exp1
+#     index          pat1		          barcode		   		      pat2
+# NNNNNNNNNNGTCACAAGGGCCGGCCACAACTCGAGNNNNNNNNNNNNNNNNTGATCCTGCAGTGTCACCTAAATCGTATGCGGCCGCGAATTCTTACTT
+# 
+# 										OR 
+# format_Exp2							
+#           pat1		          barcode		   		      pat2
+# GTCACAAGGGCCGGCCACAACTCGAGNNNNNNNNNNNNNNNNTGATCCTGCAGTGTCACCTAAATCGTATGCGGCCGCGAATTCTTACTT	
+# 
+# 										OR 
+# format_Exp3							
+#      barcode		   		      pat2
+# NNNNNNNNNNNNNNNNTGATCCTGCAGTGTCACCTAAATCGTATGCGGCCGCGAATTCTTACTT	
+# 
+# #****************************************************************************************************
+# Typical structures of mapping reads
+# 
+# Forward Read:
+# 
+# format_map1
+#      index   	        pat1             barcode     pat2		genomic DNA
+# NNNNNNNNNNGTCACAAGGGCCGGCCACAACTCGAGNNNNNNNNNNNNNNNNTGATCNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+# 
+# 										OR 
+# format_map2										
+#     	pat1            		barcode    pat2		 genomic DNA
+# GTCACAAGGGCCGGCCACAACTCGAGNNNNNNNNNNNNNNNNTGATCNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+# 
+# 										OR 
+# format_map3										
+#     barcode      pat2		genomic DNA
+# NNNNNNNNNNNNNNNNTGATCNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+# 
+# 
+# Reverse Read:
+# 	     map_pat_rev					     genomic DNA
+# GTACGTCACAATATGATTATCTTTCTAGGGTTAANNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+
+#****************************************************************************************************
+
+
+					
+# the length of index seqeunce. If no index is part of the read (formats Exp2, Exp3, map2 and map3), then right 0.
+# please note that the read structure at the start
+
+index_length=	0
+map_fwd_index_length= 10
+
+
+
+# the length of the barcode. The program looks for barcodes which are barcode_length Â± 1. 
+
+barcode_length= 16
+
+
+
+
+# the first constant part (pat1) in the normalization/expression read. If the read is starting. 
+# directly from barcode then rigth NA to this pattern. 
+# Only ACTG are allowed.
+
+pat1=	GTCACAAGGGCCGGCCACAA
+
+
+
+# the second constant part (pat2) in the normalization/expression read. 
+pat2=	GATCGGTACCCA
+
+
+
+# The maximum Hamming distance to filter out potential mutants. An hd of 2 will mean that 
+# for a frequent barcode all other (less frequent) barcodes only 2 Hamming distance apart
+# will be discarded from the list of genuine barcodes.
+
+hd=	2
+lev_dist= 2
+
+
+# the number of processors to be used for Bowtie2 alignments 
+
+cores=	10
+
+
+# the minimum number of reads for considering a barcode genuine. An arbitrary recommendation 
+# is 5 reads. But if your sequencing depth is low than you might want to reduce it to 3 or 4.
+# But these are spikeinÅns so let's just get a cutoff of 1000
+
+min_counts= 1000
