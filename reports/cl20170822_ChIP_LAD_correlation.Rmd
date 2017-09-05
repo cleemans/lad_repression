@@ -1,0 +1,411 @@
+
+
+## library and data loading
+```{r, fig.width=10, fig.height=10}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(zoo)
+library(data.table)
+setDTthreads(10)
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+LAD_HMM = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+
+
+lmnb1_count = read.table('../raw_data/rep2_pLT_LMNB1_0.counts.txt.gz')
+dam_count = read.table('../raw_data/rep2_pLT_Dam_0.counts.txt.gz')
+colnames(lmnb1_count) = colnames(dam_count) = c('seqnames', 'start', 'end', 'count')
+for (lmnb1_file in c('../raw_data/rep2_pLT_LMNB1_0_1.counts.txt.gz',
+                     '../raw_data/rep2_pLT_LMNB1_1.counts.txt.gz',
+                     '../raw_data/rep2_pT_LMNB1.counts.txt.gz')){
+    lmnb1_count[,4] = rowSums(cbind(lmnb1_count[,4], read.table(lmnb1_file)[,4]))
+    dam_file = sub('LMNB1', 'Dam', lmnb1_file)
+    dam_count[,4] = rowSums(cbind(dam_count[,4], read.table(dam_file)[,4]))
+}
+
+
+lmnb1_gr = makeGRangesFromDataFrame(lmnb1_count)
+
+lad_overlap = findOverlaps(LAD_HMM[LAD_HMM$name=='LAD'], lmnb1_gr)
+ilad_overlap = findOverlaps(LAD_HMM[LAD_HMM$name=='interLAD'], lmnb1_gr)
+
+
+lad_log2 = log2(sum(lmnb1_count[to(lad_overlap),'count'])/sum(dam_count[to(lad_overlap),'count']))
+ilad_log2 = log2(sum(lmnb1_count[to(ilad_overlap),'count']) /
+                 sum(dam_count[to(ilad_overlap),'count']))
+
+
+
+
+peak_table = read.table('~/mydata/data/ChIP/TF/ELF1_K562_peaks_hg19_ENCFF725PEY.bed.gz',
+                        stringsAsFactors=F, col.names=c('seqnames', 'start', 'end',
+                                                        'name', 'score', 'strand',
+                                                        'signalValue', 'pValue',
+                                                        'qValue', 'peak'))
+peak_gr = makeGRangesFromDataFrame(peak_table, keep.extra.columns=T)
+
+lad_peaks = peak_gr[to(findOverlaps(LAD_HMM[LAD_HMM$name=='LAD'], peak_gr))]
+
+
+o = findOverlaps(lad_peaks, lmnb1_gr)
+
+o_dt = as.data.table(o)
+o_dt$signal_value = lad_peaks[from(o)]$signalValue
+o_dt$dam = dam_count[to(o), 'count'] + 1
+o_dt$lmnb1 = lmnb1_count[to(o), 'count'] + 1
+
+data = o_dt[, list(signal_value=signal_value[1], log_dam=log2(sum(lmnb1)/sum(dam))),
+            by=queryHits]
+
+cor_elf1 = cor(data$signal_value, data$log_dam)
+
+ggplot(data.frame(data), aes(x=log2(signal_value), y=log_dam)) +
+    geom_point(alpha=0.3,size=0.3) +
+    ggtitle(paste0('ELF1 signal of peaks vs lamina interaction in LADs\ncor=',
+                   cor_elf1)) +
+    geom_smooth()
+
+```
+
+```{r}
+
+import_narrowPeak <-function(file_name){
+    peak_table = read.table(file_name,  stringsAsFactors=F,
+                            col.names=c('seqnames', 'start', 'end', 'name',
+                                        'score', 'strand', 'signalValue', 'pValue',
+                                        'qValue', 'peak'))
+    peak_gr = makeGRangesFromDataFrame(peak_table, keep.extra.columns=T)
+}
+
+
+plot_peaks_lam <- function(peak_gr, tf_name, lad_hmm, lmnb1_gr, dam_count,
+                           lmnb1_count){
+
+
+    lad_peaks = peak_gr[to(findOverlaps(lad_hmm, peak_gr))]
+
+
+    o = findOverlaps(lad_peaks, lmnb1_gr)
+
+    o_dt = as.data.table(o)
+    o_dt$signal_value = lad_peaks[from(o)]$signalValue
+    o_dt$dam = dam_count[to(o), 'count'] + 1
+    o_dt$lmnb1 = lmnb1_count[to(o), 'count'] + 1
+
+    data = o_dt[, list(signal_value=signal_value[1], log_dam=log2(sum(lmnb1)/sum(dam))),
+               by=queryHits]
+
+    correlation = cor(data$signal_value, data$log_dam)
+    title = paste0(tf_name, ' signal of peaks vs lamina interaction in LADs\n',
+                   'cor=', correlation, ' n=', nrow(data))
+    ggplot(data.frame(data), aes(x=log2(signal_value), y=log_dam)) +
+       geom_point(alpha=0.3,size=0.3) +
+       ggtitle(title) +
+       geom_smooth()
+}
+
+ELF1_conservative_gr = import_narrowPeak('~/mydata/data/ChIP/TF/ELF1_K562_conservative_peaks_hg19_ENCFF067ZUO.bed.gz')
+
+plot_peaks_lam(ELF1_conservative_gr,
+               'ELF1 conservative',LAD_HMM[LAD_HMM$name=='LAD'], lmnb1_gr, dam_count,
+               lmnb1_count)
+
+
+ELF1_optimal_gr = import_narrowPeak('~/mydata/data/ChIP/TF/ELF1_K562_optimal_peaks_hg19_ENCFF392MUM.bed.gz')
+
+plot_peaks_lam(ELF1_optimal_gr, 'ELF1 optimal',LAD_HMM[LAD_HMM$name=='LAD'],
+               lmnb1_gr, dam_count, lmnb1_count)
+
+
+```
+
+```{r}
+ARNT_optimal_gr = import_narrowPeak('~/mydata/data/ChIP/TF/ARNT_K562_optimal_peaks_hg19_ENCFF507MGL.bed.gz')
+
+plot_peaks_lam(ARNT_optimal_gr, 'ARNT optimal', LAD_HMM[LAD_HMM$name=='LAD'], lmnb1_gr,
+               dam_count, lmnb1_count)
+
+
+```
+
+
+
+
+```shell
+gunzip -c ~/mydata/data/ChIP/TF/ELF1_K562_peaks_hg19_ENCFF725PEY.bed.gz | \
+    awk -vOFS='\t' '{print $1, $2 + $10 - 1000, $2 + $10 + 1000}' | \
+    bwtool summary -with-sum -skip-median -keep-bed /dev/stdin \
+           ~/mydata/data/tracks/hg19/GSM1480321_K562_GROcap_wTAP_plus.bigWig \
+           /dev/stdout | gzip -c > raw_data/peaks/ELF1_peak_grocap_plus.txt.gz
+
+gunzip -c ~/mydata/data/ChIP/TF/ELF1_K562_peaks_hg19_ENCFF725PEY.bed.gz | \
+   awk -vOFS='\t' '{print $1, $2 + $10 - 1000, $2 + $10 + 1000}' | \
+   bwtool summary -with-sum -skip-median -keep-bed /dev/stdin \
+          ~/mydata/data/tracks/hg19/GSM1480321_K562_GROcap_wTAP_minus.bigWig \
+          /dev/stdout | gzip -c > raw_data/peaks/ELF1_peak_grocap_minus.txt.gz
+
+awk '{print $1, $2 + 1000, $2 + 1000, }' <(gunzip -c  raw_data/peaks/ELF1_peak_grocap_minus.txt.gz) <(gunzip -c  raw_data/peaks/ELF1_peak_grocap_minus.txt.gz)
+```
+
+
+
+```{r}
+
+grocap_plus = import.bw('~/mydata/data/tracks/hg19/GSM1480321_K562_GROcap_wTAP_plus.bigWig')
+
+grocap_minus = import.bw('~/mydata/data/tracks/hg19/GSM1480321_K562_GROcap_wTAP_minus.bigWig')
+
+
+peak_gr = import_narrowPeak('~/mydata/data/ChIP/TF/ELF1_K562_optimal_peaks_hg19_ENCFF392MUM.bed.gz')
+
+
+# peak_gr = import_narrowPeak('~/mydata/data/ChIP/TF/ELF1_K562_peaks_hg19_ENCFF725PEY.bed.gz')
+#
+
+peak_gr$grocap = 0
+
+o_plus = findOverlaps(peak_gr, grocap_plus, maxgap=1000)
+
+o_dt = as.data.table(o_plus)
+o_dt$grocap = score(grocap_plus[from(o_plus)])
+
+data = o_dt[, list(grocap=sum(grocap)),
+           by=queryHits]
+
+peak_gr[data$queryHits]$grocap = peak_gr[data$queryHits]$grocap + data$grocap
+
+o_minus = findOverlaps(peak_gr, grocap_minus, maxgap=1000)
+o_dt = as.data.table(o_minus)
+o_dt$grocap = score(grocap_minus[from(o_minus)])
+
+data = o_dt[, list(grocap=sum(grocap)),
+           by=queryHits]
+peak_gr[data$queryHits]$grocap = peak_gr[data$queryHits]$grocap - data$grocap
+
+
+peak_gr$grocap = pseudo_log10(peak_gr$grocap)
+
+peak_away = peak_gr[peak_gr$grocap < 1]
+peak_close = peak_gr[peak_gr$grocap > 1]
+
+plot_peaks_lam(peak_away,
+               'ELF1 optimal away',LAD_HMM[LAD_HMM$name=='LAD'], lmnb1_gr, dam_count,
+               lmnb1_count)
+
+plot_peaks_lam(peak_close,
+              'ELF1 optimal close',LAD_HMM[LAD_HMM$name=='LAD'], lmnb1_gr, dam_count,
+              lmnb1_count)
+
+
+o_region = findOverlaps(peak_away, lmnb1_gr, maxgap=22000)
+
+data = data.table(start = start(lmnb1_gr[to(o_region)]) -
+                          start(peak_away[from(o_region)]),
+                  end = end(lmnb1_gr[to(o_region)]) -
+                        start(peak_away[from(o_region)]),
+                  dam = dam_count[to(o_region),4],
+                  lmnb1 = lmnb1_count[to(o_region),4])
+
+fun_seperate = function(x){list(pos=x$start:x$end, dam=x$dam, lmnb1=x$lmnb1)}
+
+
+per_pos = data[, fun_seperate(.SD), by = 1:nrow(data)]
+
+
+per_pos = per_pos[order(per_pos$pos), ]
+
+wsize<-floor(nrow(per_pos)/20) #2% of all datapoints in the set
+if(!wsize %% 2) {wsize<-wsize+1} #must be odd
+#plot:
+per_pos[, dam_sum := rollapplyr(dam, width=wsize, FUN=sum, fill=0), by=pos]
+per_pos[, lmnb1_sum := rollapplyr(lmnb1, width=wsize, FUN=sum, fill=0), by=pos]
+
+
+ggplot(data.frame(per_pos), aes(x=pos, y=log2(dam/lmnb1_sum))) +
+    geom_line() +
+    theme_bw() +
+    ylim(-3,4)
+
+
+data_dam = read.table('../raw_data/peaks/ELF1_matrix_active_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ELF1_matrix_active_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[,7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[,7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    theme_bw() +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    ylim(-3,4)
+
+data_dam = read.table('../raw_data/peaks/ELF1_matrix_inactive_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ELF1_matrix_inactive_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[,7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[,7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    theme_bw() +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    ylim(-3,4)
+```
+
+
+```{r}
+
+
+data_dam = read.table('../raw_data/peaks/ATF2_matrix_active_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ATF2_matrix_active_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[,7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[,7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ATF2 peaks < 1000bp from active regions') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+data_dam = read.table('../raw_data/peaks/ATF2_matrix_inactive_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ATF2_matrix_inactive_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[,7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[,7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ATF2 peaks > 1000bp  active regions') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+peak_score = read.table('../raw_data/peaks/ATF2_inactive_peaks.bed',
+                      stringsAsFactors=T)
+
+match_peak = match(paste0(data_dam[,1], data_dam[,2] + 1000),
+                 paste0(peak_score[,1], peak_score[,2] + peak_score[,10]))
+
+peak_score = peak_score[match_peak, ]
+
+quant = quantile(peak_score[,7], c(0.9), na.rm=T)
+
+test = data.frame(pos=-220:219 * 100,
+                  dam=colSums(data_dam[which(peak_score[,7] > quant),
+                                       7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[which(peak_score[,7] > quant),
+                                           7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ATF2 peaks > 1000bp  active regions (top 10% peak score)') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+```
+
+
+```{r}
+
+
+data_dam = read.table('../raw_data/peaks/ZFX_matrix_active_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ZFX_matrix_active_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+peak_score = read.table('../raw_data/peaks/ZFX_active_peaks.bed',
+                        stringsAsFactors=T)
+
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[,7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[,7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ZFX peaks < 1000bp from active regions') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+data_dam = read.table('../raw_data/peaks/ZFX_matrix_inactive_dam.txt.gz', skip=1,
+                       stringsAsFactors=F)
+data_lmnb1 = read.table('../raw_data/peaks/ZFX_matrix_inactive_lmnb1.txt.gz', skip=1,
+                      stringsAsFactors=F)
+
+
+test = data.frame(pos=-220:219 * 100,  
+                dam=colSums(data_dam[, 7:ncol(data_dam)], na.rm=T),
+                lmnb1=colSums(data_lmnb1[, 7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ZFX peaks > 1000bp  active regions') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+peak_score = read.table('../raw_data/peaks/ZFX_inactive_peaks.bed',
+                      stringsAsFactors=T)
+
+
+match_peak = match(paste0(data_dam[,1], data_dam[,2] + 1000),
+                   paste0(peak_score[,1], peak_score[,2] + peak_score[,10]))
+
+peak_score = peak_score[match_peak, ]
+
+quant = quantile(peak_score[,7], c(0.7), na.rm=T)
+
+test = data.frame(pos=-220:219 * 100,  
+                  dam=colSums(data_dam[which(peak_score[,7] > quant),
+                                       7:ncol(data_dam)], na.rm=T),
+                  lmnb1=colSums(data_lmnb1[which(peak_score[,7] > quant),
+                                           7:ncol(data_lmnb1)], na.rm=T))
+
+ggplot(test, aes(x=pos, y=log2(lmnb1/dam))) +
+    geom_line() +
+    ggtitle('ZFX peaks > 1000bp  active regions (top 50% peak score)') +
+    geom_hline(yintercept=lad_log2, color=COL_lad['LAD']) +
+    geom_hline(yintercept=ilad_log2, color=COL_lad['iLAD']) +
+    theme_bw() +
+    ylim(-3,4)
+
+```

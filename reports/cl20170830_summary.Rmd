@@ -432,7 +432,6 @@ P$chrom_call = factor(state_vec[chrom_call], levels=state_vec)
 
 ggplot(P[P$class_GROcap!='boundary',], aes(x=class_GROcap_n, fill=chrom_call)) +
     geom_bar(color='black', position='fill') +
-    theme_bw() +
     scale_fill_manual(values=COL_chrom) +
     scale_y_continuous(labels=percent, limits=c(0,1)) +
     ylab('percent') +
@@ -639,7 +638,6 @@ P_enh$chrom_call = factor(state_vec[chrom_call], levels=state_vec)
 
 ggplot(P_enh[P_enh$class!='boundary',], aes(x=class_n, fill=chrom_call)) +
     geom_bar(color='black', position='fill') +
-    theme_bw() +
     scale_fill_manual(values=COL_chrom) +
     scale_y_continuous(labels=percent, limits=c(0,1)) +
     ylab('percent') +
@@ -674,7 +672,6 @@ ggplot(p_class, aes(x=class_GROcap_n, y=tissues_expressed, color=class_GROcap)) 
     geom_point(data=p_class[p_class$class_GROcap != 'iLAD', ],
                position=position_jitter(width=0.4),
                alpha=0.5) +
-    theme_bw() +
     theme(legend.title=element_blank()) +
     scale_colour_manual(values=COL_class) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
@@ -700,7 +697,6 @@ ggplot(p_class, aes(x=class_GROcap_n, y=CpG_OE, color=class_GROcap)) +
     geom_point(data=p_class[p_class$class_GROcap != 'iLAD', ],
                position=position_jitter(width=0.4),
                alpha=0.5, size=0.5) +
-    theme_bw() +
     theme(legend.title=element_blank()) +
     scale_colour_manual(values=COL_class) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
@@ -784,7 +780,6 @@ log2_data = do.call(rbind.data.frame, log2_list)
 
 ggplot(log2_data, aes(x=pos, y=log2, color=class)) +
     geom_line() +
-    theme_bw() +
     scale_color_manual(values=COL) +
     ylim(-3,3.5) +
     geom_hline(yintercept = lad_log2, color=COL_lad['LAD']) +
@@ -854,7 +849,6 @@ log2_data = do.call(rbind.data.frame, log2_list)
 
 ggplot(log2_data, aes(x=pos, y=log2, color=class)) +
     geom_line() +
-    theme_bw() +
     scale_color_manual(values=COL) +
     ylim(-3,3.5) +
     geom_hline(yintercept = lad_log2, color=COL_lad['LAD']) +
@@ -921,12 +915,19 @@ levels(p_pol2) = c("TSS region (-50bp:+300bp from TSS)",
                    "Gene body (+300bp:3000bp from TSS)")
 ggplot(p_pol2, aes(x=class_GROcap, y=log10(value), color=class_GROcap)) +
     geom_violin() +
-    theme_bw() +
-    geom_point(position=position_jitter(width=0.5), alpha=0.3, size=0.3) +
+    geom_point(position=position_jitter(width=0.1), alpha=0.5, size=0.5) +
     scale_color_manual(values=COL_class) +
-    theme() +
     xlab('promoter class') +
     facet_wrap('variable')
+
+
+ggplot(p_matched, aes(x=log2(tssr_POL2A + body_POL2A),
+                      y=log10(tssr_POL2A / body_POL2A),
+                      color=class_GROcap)) +
+    geom_point(alpha=0.5, size=0.5) +
+    geom_smooth() +
+    scale_color_manual(values=COL_class)
+
 
 ```
 
@@ -1104,7 +1105,6 @@ ggplot(relative_data, aes(x=pos, y=value, color=class,
     geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
     geom_line() +
     facet_wrap(~experiment+class, ncol=2) +
-    theme_bw() +
     scale_linetype_manual(values = c(2,1)) +
     scale_color_manual(values=COL_class)
 
@@ -1141,7 +1141,6 @@ p_matched = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
 ggplot(p_matched, aes(x=class_GROcap, y=K562_fpkm, color=class_GROcap_n)) +
     geom_violin(alpha=0.5) +
     geom_point(size=0.5, alpha=0.5, position=position_jitter(width=0.5)) +
-    theme_bw() +
     scale_color_manual(values = COL_class_GROcap_n)
 
 ```
@@ -2076,7 +2075,6 @@ title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched 
 ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
     geom_point(alpha=0.5,size=0.5) +
     stat_smooth() +
-    theme_bw() +
     ggtitle(title) +
     scale_color_manual(values=col_vec) +
     facet_wrap(~class)
@@ -2139,7 +2137,6 @@ title = paste('CREB1 MA0018.2 (CREB1 motif) knockdown vs affinity rank\nmatched 
 ggplot(coef_matched, aes(x=affinity, y=log_fc, color=class)) +
     geom_point(alpha=0.5,size=0.5) +
     stat_smooth() +
-    theme_bw() +
     ggtitle(title) +
     scale_color_manual(values=col_vec) +
     facet_wrap(~class)
@@ -2262,7 +2259,6 @@ ggplot(relative_data, aes(x=pos, y=value, color=experiment,
     geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
     geom_line() +
     facet_wrap(~class) +
-    theme_bw() +
     scale_linetype_manual(values = c(2,1))
 
 
@@ -2555,7 +2551,6 @@ ggplot(P[P$class_GROcap!='boundary', ],
     geom_violin(alpha=0.5) +
     ylab('log10(NELFE)') +
     xlab('class') +
-    theme_bw() +
     geom_point(data=p_lad, position=position_jitter(width=0.5),
                size=0.3, alpha=0.3) +
     scale_color_manual(values=COL_class)
@@ -2571,7 +2566,6 @@ ggplot(p_matched, aes(x=class_GROcap, y=NELFE, color=class_GROcap)) +
     ylab('log10(NELFE)') +
     xlab('class') +
     geom_point(position=position_jitter(width=0.5), size=0.3, alpha=0.3) +
-    theme_bw() +
     scale_color_manual(values=COL_class)
 dev.off()
 ```
