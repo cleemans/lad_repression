@@ -1,0 +1,349 @@
+```{r}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'GROcap_K562')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+
+
+```
+
+
+
+```{r}
+
+ilad_gr = LAD_K562[LAD_K562$name=='interLAD']
+o = findOverlaps(tss_gr, ilad_gr)
+o_frame = data.frame(o)
+o_frame$gene_id = P$gene_id[from(o)]
+
+unique_frame = unique(o_frame[,c('subjectHits', 'gene_id')])
+unique_frame = unique_frame[!is.na(unique_frame$gene_id), ]
+unique_frame = unique_frame[which(unique_frame$gene_id!='NA'), ]
+lad_table = table(unique_frame$subjectHits)
+lonely_lad_vec = as.numeric(names(lad_table)[lad_table==1])
+lonely_frame = unique_frame[unique_frame$subjectHits %in% lonely_lad_vec, ]
+lonely_gr = ilad_gr[as.numeric(names(lad_table)[lad_table==1])]
+
+gene_exp_data = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                             header=T, stringsAsFactors=F, row.names=1)
+plot(density(log10(gene_exp_data$pme_FPKM)))
+genes_expressed = rownames(gene_exp_data)[gene_exp_data$pme_FPKM > 1]
+
+transcript_exp_data = read.table('../raw_data/K562_rna_rep1_transcripts_ENCFF853QUL.tsv',
+                             header=T, stringsAsFactors=F, row.names=1)
+
+gencode_gr = import.gff('../../../data/tracks/hg19/gencode.v19.annotation.gff3.gz')
+transcript_gr = gencode_gr[gencode_gr$type=='transcript']
+
+
+lonely_gen_vec = unique(lonely_frame$gene_id)
+
+lonely_gr = transcript_gr[which(transcript_gr$gene_id%in%lonely_gen_vec)]
+transcript_data = data.frame(transcript_id=lonely_gr$transcript_id,
+                             gene_id = lonely_gr$gene_id,
+                             stringsAsFactors=F)
+transcript_data$IsoPct = transcript_exp_data[transcript_data$transcript_id, 'IsoPct']
+transcript_data = transcript_data[transcript_data$gene_id %in% genes_expressed, ]
+
+max_transcript = ddply(transcript_data, .(gene_id), function(x){
+    if (nrow(x) > 1){
+      x$transcript_id[which.max(x$IsoPct)]
+    } else {
+      x$transcript_id[1]
+    }
+})
+
+lonely_gr = lonely_gr[lonely_gr$transcript_id%in%max_transcript[,2]]
+
+names(lonely_gr) = lonely_gr$transcript_id
+score(lonely_gr) = 0
+export.bed(lonely_gr, '../raw_data/cl20171009_lonely_transcript_gencode_v19_hg19.bed')
+max(width(lonely_gr))
+
+```
+
+
+```
+lonely=raw_data/cl20171009_lonely_transcript_gencode_v19_hg19.bed
+
+
+for proseq in $(ls ~/mydata/data/tracks/hg19/*PROseq*)
+do
+  proseq_name=$(basename "${proseq%.*}")
+  out_tss=raw_data/$proseq_name"_lonely.txt.gz"
+  nice -19 computeMatrix reference-point -R $lonely \
+                                       -S $proseq \
+                                       --referencePoint TSS \
+                                       -a 900000 -b 2000 \
+                                       --binSize=2000 -p 10 \
+                                       --averageTypeBins sum \
+                                       --missingDataAsZero \
+                                       --outFileName $out_tss
+done
+
+
+for dam in $(ls /home/t.v.schaik/mydata/proj/3D_nucleus/results/ts170821_GCF4577_K562_p13_LMNB1/results/tracks_counts/*-gatc.bw)
+do
+  dam_name=$(basename "${dam%.*}")
+  out_tss=raw_data/$dam_name"_lonely.txt.gz"
+  nice -19 computeMatrix reference-point -R $lonely \
+                                       -S $dam \
+                                       --referencePoint TSS \
+                                       -a 900000 -b 2000 \
+                                       --binSize=2000 -p 10 \
+                                       --averageTypeBins mean \
+                                       --outFileName $out_tss
+done
+```
+
+
+```{r, fig.height=10, fig.width=10}
+## PRO-seq
+proseq_plus_lonely = read.table('../raw_data/GSM1480327_K562_PROseq_plus_lonely.txt.gz',
+                                sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+proseq_minus_lonely = read.table('../raw_data/GSM1480327_K562_PROseq_minus_lonely.txt.gz',
+                                 sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+strand_vec = which(proseq_plus_lonely[,5]=='+')
+proseq_range = 6:ncol(proseq_plus_lonely)
+proseq_sense = rbind(proseq_plus_lonely[strand_vec, proseq_range],
+                     proseq_minus_lonely[-strand_vec, proseq_range] * -1)
+colnames(proseq_sense) = -0.5:449.5 * 2000
+transcript_levels = lonely_gr$transcript_id[order(width(lonely_gr))]
+proseq_sense$transcript_id = factor(rownames(proseq_sense),
+                                    levels=unique(transcript_levels))
+
+melt_proseq = melt(proseq_sense)
+
+
+
+melt_proseq$pos = as.numeric(as.character(melt_proseq$variable))
+ggplot(melt_proseq, aes(x=pos, y=transcript_id, fill=pseudo_log10(value))) +
+  geom_tile() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  scale_fill_gradient(high='black', low='white')
+
+
+
+dam_lonely = read.table('../raw_data/Dam16-gatc_lonely.txt.gz',
+                        sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+damlam_lonely = read.table('../raw_data/LMNB1-gatc_lonely.txt.gz',
+                        sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+dam_range = 6:ncol(dam_lonely)
+lamlog_lonely = log2((damlam_lonely[,dam_range] + 1) / (dam_lonely[,dam_range] + 1))
+
+colnames(lamlog_lonely) = -0.5:449.5 * 2000
+lamlog_lonely$transcript_id = factor(rownames(lamlog_lonely),
+                                    levels=unique(transcript_levels))
+
+melt_lamlog = melt(lamlog_lonely)
+
+melt_lamlog$pos = as.numeric(as.character(melt_lamlog$variable))
+
+ggplot(melt_lamlog, aes(x=pos, y=transcript_id, fill=value)) +
+    geom_tile() +
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank()) +
+    scale_fill_gradientn(limits=c(-2,2), values=rescale(c(-2,0,2)),
+                         colors= c("#0077FF", "#FFFFFF", "#FF0000"), oob=squish)
+
+```

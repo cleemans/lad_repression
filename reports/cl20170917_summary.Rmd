@@ -452,6 +452,7 @@ H3K27me3, CTCF, H3K9me3, H2A.Z, POL2, DNAse-seq and FAIRE-seq was used to define
 these states.
 
 ```{r figure 1de.1, fig.width=10,fig.height=10, echo=FALSE}
+
 sure_plus = read.table('../raw_data/enhancer_regions_sure_plus.txt.gz', row.names=4,
                        stringsAsFactors=F)
 sure_minus = read.table('../raw_data/enhancer_regions_sure_minus.txt.gz', row.names=4,
@@ -475,14 +476,34 @@ P_enh = data.frame(SuRE=rowMeans(cbind(sure_plus$mean, sure_minus$mean)),
                    GROcap=rowMeans(cbind(grocap_plus$mean,
                                    abs(grocap_minus$mean))),
                    row.names=rownames(sure_plus))
+enh_loc = do.call(rbind.data.frame, c(strsplit(rownames(P_enh), '[:-]'),
+                  stringsAsFactors=F))
+colnames(enh_loc) = c('seqnames', 'start', 'end')
+enh_loc$start = as.numeric(enh_loc$start)
+enh_loc$end = as.numeric(enh_loc$end)
+
+enh_gr = makeGRangesFromDataFrame(enh_loc)
+
+gencode_gr = import.gff('~/mydata/data/tracks/hg19/gencode.v19.annotation.gff3.gz')
+gencode_gr = gencode_gr[gencode_gr$type=='transcript']
+
+start_vec = ifelse(strand(gencode_gr)=='+', start(gencode_gr), end(gencode_gr))
+gencode_tss = GRanges(seqnames(gencode_gr),
+                      IRanges(start_vec, start_vec))
+
+o = findOverlaps(enh_gr, gencode_tss, maxgap=5000)
+
+P_enh = P_enh[-unique(queryHits(o)), ]
+enh_loc = enh_loc[-unique(queryHits(o)), ]
+
 chr_y = grep('chrY', rownames(P_enh))
 P_enh = P_enh[-chr_y,]
+enh_loc = enh_loc[-chr_y, ]
 P_enh$SuRE = pseudo_log10(P_enh$SuRE)
 P_enh$GROcap = pseudo_log10(P_enh$GROcap)
 
-enh_gr = makeGRangesFromDataFrame(sure_plus[-chr_y, ])
-
 LAD_K562 = import.bed('../../../data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+enh_gr = makeGRangesFromDataFrame(enh_loc)
 o = findOverlaps(enh_gr, LAD_K562[LAD_K562$name=='LAD'])
 P_enh$LAD = 0
 P_enh$LAD[queryHits(o)] = 1
@@ -736,7 +757,7 @@ dam_count = read.table('/home/t.v.schaik/mydata/proj/3D_nucleus/results/ts170821
 colnames(lmnb1_count) = colnames(dam_count) = c('seqnames', 'start', 'end', 'count')
 
 lmnb1_gr = makeGRangesFromDataFrame(lmnb1_count)
-
+gencode
 lad_hmm_gr = import.bed('../../../data/tracks/hg19/cl20161019_LAD_2state_K562.bed')
 lad_overlap = findOverlaps(lad_hmm_gr[lad_hmm_gr$name=='LAD'], lmnb1_gr)
 ilad_overlap = findOverlaps(lad_hmm_gr[lad_hmm_gr$name=='interLAD'], lmnb1_gr)
@@ -858,151 +879,6 @@ ggplot(log2_data, aes(x=pos, y=log2, color=class)) +
 
 ```
 
-```{r}
-## TSA
-tsa_ac_tss = read.table('../raw_data/tsa_ac_tss.txt.gz',
-                        sep='\t', skip=1, stringsAsFactors=T, row.names=4)
-tsa_b_tss = read.table('../raw_data/tsa_b_tss.txt.gz',
-                       sep='\t', skip=1, stringsAsFactors=T, row.names=4)
-tsa_b_tss = read.table('../raw_data/tsa_b_tss_44000.txt.gz',
-                      sep='\t', skip=1, stringsAsFactors=T, row.names=4)
-tsa_son_tss = read.table('../raw_data/tsa_son_tss.txt.gz',
-                     sep='\t', skip=1, stringsAsFactors=T, row.names=4)
-tsa_b_gr = import.bw('~/mydata/data/tracks/hg19/K562_TSA_LaminB_ori.bw')
-o = findOverlaps(LAD_K562[LAD_K562$name=='LAD'], tsa_b_gr)
-lad_mean_b = mean(tsa_b_gr[to(o)]$score)
-ilad_mean_b = mean(tsa_b_gr[-to(o)]$score)
-
-tsa_ac_gr = import.bw('~/mydata/data/tracks/hg19/K562_TSA_LaminAC_ori.bw')
-o = findOverlaps(LAD_K562[LAD_K562$name=='LAD'], tsa_ac_gr)
-lad_mean_ac = mean(tsa_ac_gr[to(o)]$score)
-ilad_mean_ac = mean(tsa_ac_gr[-to(o)]$score)
-
-
-
-
-
-# get_run_mean <- function(class, class_col, P, oENST, oPOS, score_vec){
-#    s<-unique(P$name[which(P[, class_col]==class) ])
-#    s<-s[!is.na(s)]
-#    w<-oENST %in% s #which rows in oENST correspond to genes in s
-#    subPOS<-oPOS[w]
-#    sub_score <-score_vec[w]
-#    o<-order(subPOS) #need to order all values by distance to gene start for running median plot:
-#    subPOS<-subPOS[o]
-#    sub_score<-sub_score[o]
-#    #determine runmed k:
-#    wsize<-floor(length(subPOS)/20) #2% of all datapoints in the set
-#    if(!wsize %% 2) {wsize<-wsize+1} #must be odd
-#    #plot:
-#    run_mean = runmean(Rle(score_vec), k=wsize, endrule='constant')
-#    return(data.frame(mean=as.numeric(run_mean), pos=subPOS, class=class))
-# }
-# h<-findOverlaps(tss_gr, tsa_ac_gr, maxgap=22000)
-#
-# oENST<-tss_gr[from(h)]$name
-# oPOS<-ifelse(strand(tss_gr[from(h)])=='+',
-#             (start(tsa_ac_gr[to(h)])+end(tsa_ac_gr[to(h)]))/2 - start(tss_gr[from(h)]),
-#             end(tss_gr[from(h)]) - (start(tsa_ac_gr[to(h)])+end(tsa_ac_gr[to(h)]))/2)
-# mean_list = mclapply(names(COL), get_run_mean, 'class_GROcap', P, oENST, oPOS,
-#                      tsa_ac_gr$score, mc.cores=10)
-#
-# tsa_ac_data = do.call(rbind.data.frame, mean_list)
-#
-# h<-findOverlaps(tss_gr, tsa_b_gr, maxgap=22000)
-#
-# oENST<-tss_gr[from(h)]$name
-# oPOS<-ifelse(strand(tss_gr[from(h)])=='+',
-#            (start(tsa_b_gr[to(h)])+end(tsa_b_gr[to(h)]))/2 - start(tss_gr[from(h)]),
-#            end(tss_gr[from(h)]) - (start(tsa_b_gr[to(h)])+end(tsa_b_gr[to(h)]))/2)
-# mean_list = mclapply(names(COL), get_run_mean, 'class_GROcap', P, oENST, oPOS,
-#                      tsa_b_gr$score, mc.cores=10)
-# tsa_ac_data = do.call(rbind.data.frame, mean_list)
-
-
-escaper_vec = P$name[P$class_GROcap=='escaper']
-repressed_vec = P$name[P$class_GROcap=='repressed']
-inactive_vec = P$name[P$class_GROcap=='inactive']
-ilad_vec =  P$name[P$class_GROcap=='iLAD']
-tsa_ac_data = data.frame(escaper=colMeans(tsa_ac_tss[escaper_vec,
-                                                     6:ncol(tsa_ac_tss)]),
-                         repressed=colMeans(tsa_ac_tss[repressed_vec,
-                                                      6:ncol(tsa_ac_tss)]),
-                         inactive=colMeans(tsa_ac_tss[inactive_vec,
-                                                     6:ncol(tsa_ac_tss)]),
-                         iLAD= colMeans(tsa_ac_tss[ilad_vec,
-                                                   6:ncol(tsa_ac_tss)]),
-                         pos=-110:109*200)
-
-
-tsa_b_data = data.frame(escaper=colMeans(tsa_b_tss[escaper_vec,
-                                                   6:ncol(tsa_b_tss)]),
-                        repressed=colMeans(tsa_b_tss[repressed_vec,
-                                                     6:ncol(tsa_b_tss)]),
-                        inactive=colMeans(tsa_b_tss[inactive_vec,
-                                                    6:ncol(tsa_b_tss)]),
-                        iLAD=colMeans(tsa_b_tss[ilad_vec,
-                                                   6:ncol(tsa_b_tss)]),
-                        pos=-220:219*100)
-tsa_son_data = data.frame(escaper=colMeans(tsa_son_tss[escaper_vec,
-                                                   6:ncol(tsa_son_tss)]),
-                        repressed=colMeans(tsa_son_tss[repressed_vec,
-                                                     6:ncol(tsa_son_tss)]),
-                        inactive=colMeans(tsa_son_tss[inactive_vec,
-                                                    6:ncol(tsa_son_tss)]),
-                        iLAD=colMeans(tsa_son_tss[ilad_vec,
-                                                   6:ncol(tsa_son_tss)]),
-                        pos=-110:109*200)
-
-
-
-dif_data = data.frame(dif1 = tsa_b_tss[,121] - tsa_b_tss[,133],
-                      dif2 = tsa_b_tss[,333] - tsa_b_tss[,321])
-rownames(dif_data) = rownames(tsa_b_tss)
-ens_vec = P$name[P$class_GROcap%in%c('escaper', 'repressed', 'inactive')]
-ens_order = order(rowSums(dif_data[ens_vec, ]), decreasing=T)
-head(ens_vec[ens_order])
-
-
-tsa_b_list = lapply(names(COL), function(x){
-        id_vec = P$name[P$class_GROcap==x]
-        data = tsa_b_tss[id_vec, 6:ncol(tsa_b_tss)]
-        colnames(data) = -220:219*100
-        melt_data = melt(data)
-        result = data.frame(score=melt_data$value,
-                            pos = as.numeric(as.character(melt_data$variable)),
-                            class=x)
-    })
-tsa_b_full = do.call(rbind, tsa_b_list)
-
-ggplot(tsa_b_full, aes(x=pos, y=score, color=class)) +
-    geom_point(alpha=0.2, size=0.2) +
-    geom_hline(yintercept = lad_mean_b, color=COL_lad['LAD']) +
-    geom_hline(yintercept = ilad_mean_b, color=COL_lad['iLAD']) +
-    scale_color_manual(values=COL_class) +
-    facet_wrap(~class)
-
-
-ggplot(melt(tsa_b_data, id.vars='pos'), aes(x=pos, y=value, color=variable)) +
-    geom_line() +
-    geom_hline(yintercept = lad_mean_b, color=COL_lad['LAD']) +
-    geom_hline(yintercept = ilad_mean_b, color=COL_lad['iLAD']) +
-    scale_color_manual(values=COL_class)
-
-
-ggplot(melt(tsa_ac_data, id.vars='pos'), aes(x=pos, y=value, color=variable)) +
-    geom_line() +
-    geom_hline(yintercept = lad_mean_ac, color=COL_lad['LAD']) +
-    geom_hline(yintercept = ilad_mean_ac, color=COL_lad['iLAD']) +
-    scale_color_manual(values=COL_class)
-
-ggplot(melt(tsa_son_data, id.vars='pos'), aes(x=pos, y=value, color=variable)) +
-    geom_line() +
-    geom_hline(yintercept = lad_mean_ac, color=COL_lad['LAD']) +
-    geom_hline(yintercept = ilad_mean_ac, color=COL_lad['iLAD']) +
-    scale_color_manual(values=COL_class)
-
-```
 
 
 
@@ -1085,9 +961,51 @@ escapers, there is a substantial difference in the amount of POL2 at the gene-bo
 So although promoters are equally capable to recruit POL2, escaper promoters show
 less elongation.
 
+```r
+chrom_sizes = read.table('~/mydata/data/hg19/hg19.chrom.sizes', row.names=1)
+
+gencode_gr = import.gtf('~/mydata/data/tracks/hg19/gencode.v19.annotation.gff3.gz')
+gencode_gr = gencode_gr[gencode_gr$type=='gene']
+
+follow_vec = follow(gencode_gr, ignore.strand=T)
+precede_vec = precede(gencode_gr, ignore.strand=T)
+
+regions = data.frame(row.names = gencode_gr$ID,
+                     strand = strand(gencode_gr))
+left = ifelse(is.na(follow_vec), -Inf,
+              (start(gencode_gr) - end(gencode_gr)[follow_vec])/2)
+right = ifelse(is.na(precede_vec), Inf,
+               (start(gencode_gr)[precede_vec] - end(gencode_gr))/2)
+
+regions$start = ifelse(regions$strand=='+', -left, -right)
+regions$end = ifelse(regions$strand=='+', right, left)
+
+write.table(regions, '../raw_data/gene_region_masks.txt', sep='\t')
+
+```
+
 
 ```{r figure4b.1, echo=FALSE}
 
+mask_regions = read.table('../raw_data/gene_region_masks.txt', header=T,
+                     row.names=1, stringsAsFactors=F)
+
+group_mean <- function(signal_data, P, mask_regions, class_name='class_GROcap'){
+    data_list = lapply(P$name, function(t_id){
+                gene_id = P[t_id, 'gene_id']
+                mask = which(-110:0 < floor(mask_regions[gene_id, 'start']/200))
+                row = signal_data[t_id,]
+                row[mask] = NA
+                return(c(class=as.character(P[t_id, class_name]), row))
+            })
+    data = do.call(rbind.data.frame, data_list)
+    mean_data = ddply(data, .(class), function(x){
+            colMeans(x[,2:ncol(x)], na.rm=T)
+    })
+    rownames(mean_data) = mean_data[,1]
+    data.frame(t(mean_data[,-1]) / 200,
+               pos=-110:109*200)
+}
 
 
 ## PRO-seq
@@ -1102,6 +1020,9 @@ proseq_sense = rbind(proseq_plus_tss[strand_vec, proseq_range],
                      proseq_minus_tss[-strand_vec, proseq_range] * -1)
 proseq_antisense = rbind(proseq_plus_tss[-strand_vec, proseq_range] * -1,
                          proseq_minus_tss[strand_vec, proseq_range])
+
+
+
 
 
 ##POL2-ChIP
@@ -1183,6 +1104,8 @@ p_matched = p_matched[which(p_matched$name %in% rownames(proseq_sense) &
 escaper_vec = p_matched[which(p_matched$class_GROcap=='escaper'), 'name']
 ilad_vec = p_matched[which(p_matched$class_GROcap=='iLAD'), 'name']
 
+
+
 colMedians <- function(x, na.rm=T){
     as.vector(apply(x, 2, median, na.rm=na.rm))
 }
@@ -1191,51 +1114,27 @@ pos_vec = -110:109 * 200
 
 
 ## all our escapers and iLADs in this subset are in all tables
-proseq_sense_mean = rbind(cbind(colMedians(proseq_sense[escaper_vec, ], na.rm=T),
-                               pos_vec, 'escaper'),
-                         cbind(colMedians(proseq_sense[ilad_vec, ], na.rm=T),
-                               pos_vec, 'iLAD'))
 
-POL2_mean = rbind(cbind(colMedians(POL2_tss[escaper_vec, ]), pos_vec, 'escaper'),
-                 cbind(colMedians(POL2_tss[ilad_vec, ]), pos_vec, 'iLAD'))
+proseq_sense_mean = group_mean(proseq_sense, p_matched, mask_regions)
+POL2_mean = group_mean(POL2_tss, p_matched, mask_regions)
+ttseq_sense_mean = group_mean(ttseq_sense, p_matched, mask_regions)
 
+sense_data = rbind(cbind(melt(proseq_sense_mean, id.vars=c('pos')), experiment='PRO-seq'),
+                   cbind(melt(POL2_mean, id.vars=c('pos')), experiment='POL2A-ChIP'),
+                   cbind(melt(ttseq_sense_mean, id.vars=c('pos')), experiment='TT-seq'))
 
+proseq_antisense_mean = group_mean(proseq_antisense, p_matched, mask_regions)
+ttseq_antisense_mean = group_mean(ttseq_antisense, p_matched, mask_regions)
 
-ttseq_sense_mean = rbind(cbind(colMedians(ttseq_sense[escaper_vec, ]),
-                              pos_vec, 'escaper'),
-                         cbind(colMedians(ttseq_sense[ilad_vec, ]),
-                               pos_vec, 'iLAD'))
+antisense_data = rbind(cbind(melt(proseq_antisense_mean, id.vars=c('pos')),
+                             experiment='PRO-seq'),
+                       cbind(melt(ttseq_antisense_mean, id.vars=c('pos')),
+                             experiment='TT-seq'))
 
+mean_data = rbind(cbind(sense_data, direction='sense'),
+                  cbind(antisense_data, direction='anti-sense'))
 
-sense_data = rbind(cbind(proseq_sense_mean, 'PRO-seq'),
-                   cbind(POL2_mean, 'POL2A-ChIP'),
-                   cbind(ttseq_sense_mean, 'TT-seq'))
-
-
-
-proseq_antisense_mean = rbind(cbind(colMedians(proseq_antisense[escaper_vec, ], na.rm=T),
-                              pos_vec, 'escaper'),
-                        cbind(colMedians(proseq_antisense[ilad_vec, ], na.rm=T),
-                              pos_vec, 'iLAD'))
-
-
-
-ttseq_antisense_mean = rbind(cbind(colMedians(ttseq_antisense[escaper_vec, ]),
-                             pos_vec, 'escaper'),
-                        cbind(colMedians(ttseq_antisense[ilad_vec, ]),
-                              pos_vec, 'iLAD'))
-
-
-antisense_data = rbind(cbind(proseq_antisense_mean, 'PRO-seq'),
-                       cbind(ttseq_antisense_mean, 'TT-seq'))
-
-mean_data = rbind(cbind(sense_data, 'sense'),
-                  cbind(antisense_data, 'anti-sense'))
 mean_data = as.data.frame(mean_data, stringsAsFactors=F)
-
-colnames(mean_data) = c('value', 'pos', 'class', 'experiment', 'direction')
-mean_data$value = as.numeric(mean_data$value)
-mean_data$pos = as.numeric(mean_data$pos)
 
 relative_data = ddply(mean_data, .(experiment),
                       function(x){
@@ -1249,12 +1148,12 @@ relative_data = ddply(mean_data, .(experiment),
 ```{r figure4b.2, fig.width=10, fig.height=20, echo=FALSE}
 
 
-ggplot(relative_data, aes(x=pos, y=value, color=class,
+ggplot(relative_data, aes(x=pos, y=value, color=variable,
                           linetype=direction)) +
     geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
     geom_line() +
-    facet_wrap(~experiment+class, ncol=2) +
-    scale_linetype_manual(values = c(2,1)) +
+    facet_wrap(~experiment+variable, ncol=2) +
+    scale_linetype_manual(values = c(1,2)) +
     scale_color_manual(values=COL_class)
 
 
@@ -1368,8 +1267,9 @@ apply_wilcox <- function(affinity, prom_table, group_vec, class_name,
         direction = ifelse(rank_fc > 1, group_vec[1], group_vec[2])
         median_fc = median(x) / median(y)
         mean_fc = mean(x) / mean(y)
+        sum_mean = mean(x) + mean(y)
         w = wilcox.test(x, y)
-        return(list(w,direction, median_fc, mean_fc, rank_fc, rank_mean))
+        return(list(w,direction, median_fc, mean_fc, rank_fc, rank_mean, sum_mean))
   })
   p_vec = unlist(lapply(fit, function(x){ x[[1]]$p.value}))
   p_adjust = p.adjust(p_vec, method='fdr')
@@ -1377,12 +1277,14 @@ apply_wilcox <- function(affinity, prom_table, group_vec, class_name,
   median_fc =  lapply(fit, function(x){ x[[3]]})
   mean_fc =  lapply(fit, function(x){ x[[4]]})
   rank_fc =  lapply(fit, function(x){ x[[5]]})
+  sum_mean =  lapply(fit, function(x){ x[[7]]})
   rank_mean = do.call(rbind, lapply(fit, function(x){ x[[6]]}))
   result_table = data.frame(id=id_vec,
                             tf_table[id_vec, ],
                             direction=unlist(direction),
                             p_adjust = p_adjust,
                             mean_fc = unlist(mean_fc),
+                            sum_mean = unlist(sum_mean),
                             median_fc = unlist(median_fc),
                             rank_fc = unlist(rank_fc),
                             rank_mean,
@@ -1430,8 +1332,7 @@ apply_kruskal <- function(affinity, prom_table, class_name,
 }
 
 
-aff_table_jaspar = read.table('../raw_data/jaspar_affinity_pseudo/seq_psam.dat',
-                              stringsAsFactors=F)
+
 tf_table = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1,
                       stringsAsFactors=F)
 colnames(tf_table) = c('name', 'species', 'class', 'family')
@@ -1498,8 +1399,6 @@ not_na = !is.na(match_vec)
 tf_table[not_na, 'tf_type'] = tf_type[match_vec[not_na],
                                       'Chromatin.Opening.Type']
 
-colnames(aff_table_jaspar) = gsub('.xml','', colnames(aff_table_jaspar))
-rownames(aff_table_jaspar) = gsub('::.*','', rownames(aff_table_jaspar))
 
 
 load('../raw_data/cl20170814_jaspar_gencode_cage_cor.rda')
@@ -1509,12 +1408,112 @@ colnames(cor_data) = rownames(tf_table)[match(colnames(cor_data), tf_table$name)
 
 id_vec = colnames(cor_data)
 
+aff_table_jaspar_1000_100 = read.table('../raw_data/jaspar_affinity_1000_100_pseudo/seq_psam.dat',
+                              stringsAsFactors=F)
+
+colnames(aff_table_jaspar_1000_100) = gsub('.xml','', colnames(aff_table_jaspar_1000_100))
+rownames(aff_table_jaspar_1000_100) = gsub('::.*','', rownames(aff_table_jaspar_1000_100))
+
 matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
                         'class_GROcap', 'escaper', 'SuRE_K562')
 
-evsr_jaspar_m = apply_wilcox(aff_table_jaspar, matched_evsr,
-                             c('repressed', 'escaper'), 'class_GROcap',
+
+evsr_jaspar_m = apply_wilcox(aff_table_jaspar_1000_100, matched_evsr,
+                             c('escaper', 'repressed'), 'class_GROcap',
                              tf_table, id_vec)
+
+evsr_jaspar_m$x = tolower(evsr_jaspar_m$tf_type)
+evsr_jaspar_m$x[is.na(evsr_jaspar_m$x)] = ''
+
+aff_table_jaspar_300_300 = read.table('../raw_data/jaspar_affinity_300_300_pseudo/seq_psam.dat',
+                              stringsAsFactors=F)
+
+colnames(aff_table_jaspar_300_300) = gsub('.xml','', colnames(aff_table_jaspar_300_300))
+rownames(aff_table_jaspar_300_300) = gsub('::.*','', rownames(aff_table_jaspar_300_300))
+
+
+evsr_jaspar_m_300_300 = apply_wilcox(aff_table_jaspar_300_300, matched_evsr,
+                             c('escaper', 'repressed'), 'class_GROcap',
+                             tf_table, id_vec)
+
+evsr_jaspar_m$mean_rank_300_300 = evsr_jaspar_m_300_300$mean_rank_escaper
+
+
+
+aff_table_jaspar_300_50 = read.table('../raw_data/jaspar_affinity_pseudo_300_50/seq_psam.dat',
+                              stringsAsFactors=F)
+
+colnames(aff_table_jaspar_300_50) = gsub('.xml','', colnames(aff_table_jaspar_300_50))
+rownames(aff_table_jaspar_300_50) = gsub('::.*','', rownames(aff_table_jaspar_300_50))
+
+
+evsr_jaspar_m_300_50 = apply_wilcox(aff_table_jaspar_300_50, matched_evsr,
+                             c('escaper', 'repressed'), 'class_GROcap',
+                             tf_table, id_vec)
+
+evsr_jaspar_m$mean_rank_300_50 = evsr_jaspar_m_300_50$mean_rank_escaper
+
+
+evsr_melt = melt(evsr_jaspar_m, measure.vars=c('mean_rank_escaper', 'mean_rank_300_300', 'mean_rank_300_50'))
+
+pdf('mean_rank.pdf', width=12, height=5)
+
+ggplot(evsr_melt, aes(x=x, y=value)) +
+    geom_violin() +
+    ylim(142, 187) +
+    geom_point(position=position_jitter(width=0.3)) +
+    geom_hline(yintercept=mean(1:nrow(matched_evsr))) +
+    scale_color_manual(values= COL_class) +
+    facet_wrap(~variable, nrow=1)
+
+dev.off()
+evsr_jaspar_m_300_50$x = tolower(evsr_jaspar_m_300_50$tf_type)
+evsr_jaspar_m_300_50$x[is.na(evsr_jaspar_m_300_50$x)] = ''
+
+
+
+pdf('fold_change.pdf')
+
+ggplot(evsr_jaspar_m_300_50, aes(x=x, y=log2(mean_fc))) +
+    geom_violin() +
+    geom_point(position=position_jitter(width=0.3))
+
+
+ggplot(evsr_jaspar_m_300_50, aes(x=log2(sum_mean), y=log2(mean_fc), color=x)) +
+    geom_point(alpha=0.3)
+
+for (type in unique(evsr_jaspar_m_300_50$x)){
+    print(ggplot(evsr_jaspar_m_300_50, aes(x=log2(sum_mean), y=log2(mean_fc), color=x)) +
+        geom_point(alpha=0.3) +
+        geom_point(data=evsr_jaspar_m_300_50[evsr_jaspar_m_300_50$x==type, ]))
+}
+
+
+for (id in rownames(evsr_jaspar_m_300_50)[order(evsr_jaspar_m_300_50$mean_fc,
+                                                 decreasing=T)]){
+    name = tf_table[id, 'name']
+    mean_fc = log2(evsr_jaspar_m_300_50[id, 'mean_fc'])
+    rank = evsr_jaspar_m_300_50[id, 'mean_rank_escaper']
+    aff_sum = log2(evsr_jaspar_m_300_50[id, 'sum_mean'])
+    tf_type = tf_table[id, 'tf_type']
+    title = paste0(name, '; ', tf_type,
+                   '\nlog2 mean fold-change = ', mean_fc,
+                   '\nescaper mean rank= ', rank,
+                   '\nsum mean affinity= ', aff_sum)
+    data = data.frame(class=matched_evsr$class_GROcap,
+                      affinity=aff_table_jaspar_300_50[matched_evsr$name, id])
+    print(ggplot(data, aes(x=class, y=log10(affinity), color=class)) +
+            geom_violin() +
+            ggtitle(title) +
+            geom_point(position=position_jitter(width=0.3)) +
+            scale_color_manual(values=COL_class))
+}
+dev.off()
+
+
+
+
+
 
 
 evsr_jaspar_exp = apply_wilcox(cor_data, matched_evsr,

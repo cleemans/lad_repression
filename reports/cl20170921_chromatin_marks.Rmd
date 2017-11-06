@@ -1,0 +1,401 @@
+# knitr document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 26-07-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains. In this report I would like to examine chromatin marks around TSS and TES of these different types of promoters.
+
+## library and data loading
+```{r, fig.width=10, fig.height=10, echo=FALSE, fig.width=10, fig.height=10}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+
+```
+for chip in $(ls ~/mydata/data/ChIP/hist/*)
+do
+    chip_name=$(basename "${chip%.*}")
+    out_tss=raw_data/$chip_name"_tss.txt.gz"
+    out_tes=raw_data/$chip_name"_tes.txt.gz"
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                           -S $chip  \
+                                           --referencePoint TSS \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 20 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tss
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_hg19.bed \
+                                           -S $chip  \
+                                           --referencePoint TES \
+                                           -a 22000 -b 22000 \
+                                           --binSize=200 -p 20 \
+                                           --averageTypeBins sum \
+                                           --missingDataAsZero \
+                                           --outFileName $out_tes
+    out_tssr=raw_data/$chip_name"_tssr.txt.gz"
+    bwtool summary -header \
+                   -fill=0 \
+                   -with-sum \
+                   -skip-median \
+                   -keep-bed \
+                   <(awk -vOFS='\t' '{
+                       if ($6=="+"){
+                           start = $2 - 50
+                           end = $3 + 300
+                       } else {
+                           start = $2-300
+                           end = $3 + 50
+                       }
+                       start = start > 0 ? start : 0 ;
+                       end = end > 0 ? end : 0 ;
+                       print $1, start, end, $4, 0, $6}' raw_data/tss_hg19.bed) \
+                   $chip /dev/stdout | gzip -c > $out_tssr &
+    out_body=raw_data/$chip_name"_body.txt.gz"
+    bwtool summary -header \
+                   -fill=0 \
+                   -with-sum \
+                   -skip-median \
+                   -keep-bed \
+                   <(awk -vOFS='\t' '{
+                       if ($6=="+"){
+                           start = $2 + 5000
+                           end = $3 + 20000
+                       } else {
+                           start = $2 - 20000
+                           end = $3 - 5000
+                       }
+                       start = start > 0 ? start : 0 ;
+                       end = end > 0 ? end : 0 ;
+                       print $1, start, end, $4, 0, $6}' raw_data/tss_hg19.bed) \
+                   $chip /dev/stdout | gzip -c > $out_body
+done
+```
+
+
+```{r, fig.width=10, fig.height=15}
+
+group_mean <- function(name, import_list, P){
+    data = import_list[[name]][,6:ncol(import_list[[name]])]
+    data = data.frame(class=P$class_GROcap, data[P$name, ])
+    mean_data = ddply(data, .(class), function(x){
+            colMeans(x[,2:ncol(x)])
+    })
+    rownames(mean_data) = mean_data[,1]
+    data.frame(t(mean_data[,-1]) / max(mean_data[,-1]), pos=-110:109*200, name=name)
+}
+group_center <- function(name, import_list, P){
+  data = import_list[[name]][,6:ncol(import_list[[name]])]
+  data = data.frame(class=P$class_GROcap,
+                    value=rowSums(data[P$name, 109:113]),
+                    name=name)
+  data$value = data$value / max(data$value)
+  return(data)
+}
+
+
+
+chip_vec = list.files('~/mydata/data/ChIP/hist/')
+tss_file_vec = gsub('.bigWig', '_tss.txt.gz', chip_vec)
+tes_file_vec = gsub('.bigWig', '_tes.txt.gz', chip_vec)
+name_vec = gsub('K562_(.*)_hg19.*', '\\1', chip_vec)
+
+tss_import_list = lapply(paste0('../raw_data/', tss_file_vec), read.table,
+                         sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+tes_import_list = lapply(paste0('../raw_data/', tes_file_vec), read.table,
+                         sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+names(tss_import_list) = names(tes_import_list) = name_vec
+
+p_matched = matchSet(P[P$class%in%c('iLAD', 'escaper'), ], 'class_GROcap',
+                     'escaper', 'GROcap_K562')
+p_class = P[P$class_GROcap%in%c('escaper', 'repressed', 'inactive'),]
+
+p_subset = rbind.data.frame(p_class, p_matched[p_matched$class_GROcap=='iLAD', ])
+mean_list = lapply(name_vec, group_mean, import_list=tss_import_list,
+                   P=p_subset)
+
+
+class_data = do.call(rbind, mean_list)
+
+ggplot(melt(class_data, id.vars=c('pos', 'name')),
+       aes(x=pos, y=value, color=variable)) +
+    geom_line() +
+    ggtitle('histone modifications around transcription start site') +
+    scale_color_manual(values=COL_class) +
+    facet_wrap(~name, nrow=2)
+
+
+
+
+mean_list = lapply(name_vec, group_mean, import_list=tes_import_list,
+                   P=p_subset)
+
+
+class_data = do.call(rbind, mean_list)
+
+ggplot(melt(class_data, id.vars=c('pos', 'name')),
+       aes(x=pos, y=value, color=variable)) +
+    geom_line() +
+    ggtitle('histone modifications around transcription termination site') +
+    scale_color_manual(values=COL_class) +
+    facet_wrap(~name)
+
+
+
+
+```
+
+
+```{r, fig.width=10, fig.height=30}
+
+tssr_file_vec = gsub('.bigWig', '_tssr.txt.gz', chip_vec)
+body_file_vec = gsub('.bigWig', '_body.txt.gz', chip_vec)
+
+tssr_import_list = lapply(paste0('../raw_data/', tssr_file_vec), read.table,
+                          row.names=4, stringsAsFactors=F,
+                          col.names=c('chrom', 'start', 'end', 'name', 'score',
+                                     'strand', 'size', 'num_data', 'min', 'max',
+                                     'mean', 'sum'))
+body_import_list = lapply(paste0('../raw_data/', body_file_vec), read.table,
+                          row.names=4, stringsAsFactors=F,
+                          col.names=c('chrom', 'start', 'end', 'name', 'score',
+                                      'strand', 'size', 'num_data', 'min', 'max',
+                                      'mean', 'sum'))
+
+tssr_list = lapply(tssr_import_list,
+                   function(tssr, P){
+                       data.frame(mean=tssr[P$name, 'mean'], class=P$class_GROcap,
+                                  region='tss region (-50bp:+300bp)',
+                                  log10=pseudo_log10(tssr[P$name, 'mean']))
+                   }, P=p_subset)
+
+body_list = lapply(body_import_list,
+                   function(body, P){
+                       data.frame(mean=body[P$name, 'mean'], class=P$class_GROcap,
+                                  region='gene body (+3000bp:+20000bp)',
+                                  log10=pseudo_log10(body[P$name, 'mean']))
+                   }, P=p_subset)
+
+names(tssr_list) = names(body_list) = name_vec
+
+data_list = lapply(name_vec, function(name){
+                       data = rbind.data.frame(tssr_list[[name]],
+                                               body_list[[name]])
+                       data$chip_name = name
+                       return(data)
+                   })
+
+data = do.call(rbind.data.frame, data_list)
+p_list = list()
+for (name in name_vec){
+    p_list[[name]] = ggplot(data[data$chip_name==name, ],
+                            aes(y=log10, x=class, color=class)) +
+                        geom_violin() +
+                        ggtitle(name) +
+                        geom_point(alpha=0.4, size=0.4,
+                                   position=position_jitter(width=0.1)) +
+                        facet_wrap(~region) +
+                        scale_color_manual(values=COL_class)
+}
+do.call(grid.arrange, c(p_list, ncol=2))
+```

@@ -1,0 +1,702 @@
+# r document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 26-07-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains. However compared to the POL2 on the TSS there seems to be little POL2 in the gene-body. This report I would like to give an overview of this POL2 side of the story.
+
+## Different promoter classes of lamina associated transcripts.
+
+Comparing autonomous promoter activity measured by SuRE and endogenous promoter activity
+
+
+## library and data loading
+```{r, echo=FALSE}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+## which POL2-chip can we use
+There are multiple chip-experiments in ENCODE:
+
+### ENCSR000BMR (ENCFF042CRO.bigWig)
+this measures bulk POL2, there was NO track with fold-change over control for hg19 and had the following issues:
+
+#### Control low read depth
+"Control alignment file /files/ENCFF750MIM/ mapped to hg19 assembly has 8547048 usable fragments. The minimum ENCODE standard for a control of ChIP-seq assays targeting POLR2A-human and investigated as a transcription factor is 10 million usable fragments, the recommended number of usable fragments is > 20 million."
+
+##### low read length
+Both input files (2 replicates) had length of 36bp, instead of the recommended 50bp
+
+##### low read depth
+1 alignment file (ENCFF822HFC) had 19600993 usable fragments, instead of the recommended 20 million fragments (> 10 million is acceptable).
+
+##### mild to moderate bottlenecking
+1 alignment file (ENCFF822HFC) had the following two remarks:
+PBC1 (PCR Bottlenecking Coefficient 1, M1/M_distinct) is the ratio of the number of genomic locations where exactly one read maps uniquely (M1) to the number of genomic locations where some reads map (M_distinct). A PBC1 value in the range 0 - 0.5 is severe bottlenecking, 0.5 - 0.8 is moderate bottlenecking, 0.8 - 0.9 is mild bottlenecking, and > 0.9 is no bottlenecking. PBC1 value > 0.9 is recommended, but > 0.8 is acceptable. ENCODE processed alignment file /files/ENCFF822HFC/ was generated from a library with PBC1 value of 0.87.
+
+PBC2 (PCR Bottlenecking Coefficient 2, M1/M2) is the ratio of the number of genomic locations where exactly one read maps uniquely (M1) to the number of genomic locations where two reads map uniquely (M2). A PBC2 value in the range 0 - 1 is severe bottlenecking, 1 - 3 is moderate bottlenecking, 3 - 10 is mild bottlenecking, > 10 is no bottlenecking. PBC2 value > 10 is recommended, but > 3 is acceptable. ENCODE processed alignment file /files/ENCFF822HFC/ was generated from a library with PBC2 value of 9.44.
+
+### ENCSR000EHL (ENCFF552VTT.bigWig)
+this measures bulk POL2, there was a track with fold-change over control for hg19, but had more issues than ENCSR000BMR:
+
+#### insufficient read length
+Both input files (2 replicates) had length of 28bp, instead of the recommended 50bp.
+
+#### insufficient read depth
+1 alignment file (ENCFF185VII) had 7558933 usable fragments and the other (ENCFF371LNT) had 7169187 usable fragments while > 10 million is acceptable.
+
+#### Inconsistent target of control experiment
+Control alignment files (ENCFF715JBE, ENCFF498SAC, ENCFF156NSV, ENCFF732TLR) have a target mouse-IgG-control-human that is neither Control-human nor Control-mouse.
+
+
+### ENCSR388QZF (ENCFF647MSS.bigWig)
+this measures bulk POL2, there was a track with fold-change over control for hg19. I previously missed this data, since it is did not show up searching "POL2 K562" while the others did.
+
+##### low read depth
+1 alignment file (ENCPL220NBH) had 19722476 usable fragments, instead of the recommended 20 million fragments (> 10 million is acceptable).
+
+
+### ENCSR031TFS (ENCFF348UKA.bigWig)
+this measures bulk POL2, there was a track with fold-change over control for hg19. I previously missed this data, since it is did not show up searching "POL2 K562" while the others did.
+
+##### low read depth
+1 alignment file (ENCPL220NBH) had 18818813 usable fragments, instead of the recommended 20 million fragments (> 10 million is acceptable).
+
+##### Mild to moderate bottlenecking
+PBC1 (PCR Bottlenecking Coefficient 1, M1/M_distinct) and PBC2 (PCR Bottlenecking Coefficient 2, M1/M2) is below threshold.
+
+
+```
+pol[1]=~/mydata/data/tracks/hg38/POL2A_K562_ENCFF042CRO.bigWig
+pol[2]=~/mydata/data/tracks/hg19/POL2/POL2_K562_fcoc_ENCSR000BMR.bigWig
+pol[3]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF552VTT.bigWig
+pol[4]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF647MSS.bigWig
+pol[5]=~/mydata/data/tracks/hg38/POL2A_K562_fcoc_ENCFF321FZQ.bigWig
+pol[6]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF348UKA.bigWig
+pol[7]=~/mydata/data/tracks/hg19/POL2AS2_K562_ENCFF354XDX.bigWig
+pol[8]=~/mydata/data/tracks/hg19/K562_POL2AS5_fcoc_ENCFF827GEM.bigWig
+
+hg[1]=hg38
+hg[2]=hg19
+hg[3]=hg19
+hg[4]=hg19
+hg[5]=hg38
+hg[6]=hg19
+hg[7]=hg19
+
+window[1]=raw_data/POL2A_K562_22000_window_ENCFF042CRO.txt.gz
+window[2]=raw_data/POL2A_K562_22000_window_ENCSR000BMR.txt.gz
+window[3]=raw_data/POL2A_K562_22000_window_ENCFF827GEM.txt.gz
+window[4]=raw_data/POL2A_K562_22000_window_ENCFF647MSS.txt.gz
+window[5]=raw_data/POL2A_K562_22000_window_ENCFF321FZQ.txt.gz
+window[6]=raw_data/POL2A_K562_22000_window_ENCFF348UKA.txt.gz
+window[7]=raw_data/POL2AS2_K562_22000_window_ENCFF354XDX.txt.gz
+window[8]=raw_data/POL2AS5_K562_22000_window_ENCFF827GEM.txt.gz
+
+tes[1]=raw_data/POL2A_K562_22000_tes_ENCFF042CRO.txt.gz
+tes[2]=raw_data/POL2A_K562_22000_tes_ENCSR000BMR.txt.gz
+tes[3]=raw_data/POL2A_K562_22000_tes_ENCFF827GEM.txt.gz
+tes[4]=raw_data/POL2A_K562_22000_tes_ENCFF647MSS.txt.gz
+tes[5]=raw_data/POL2A_K562_22000_tes_ENCFF321FZQ.txt.gz
+tes[6]=raw_data/POL2A_K562_22000_tes_ENCFF348UKA.txt.gz
+tes[7]=raw_data/POL2AS2_K562_22000_tes_ENCFF354XDX.txt.gz
+tes[8]=raw_data/POL2AS5_K562_22000_tes_ENCFF827GEM.txt.gz
+
+
+
+for i in 1 2 3 4 5 6 7 8
+do
+    nice -19 computeMatrix reference-point -R raw_data/transcripts_${hg[$i]}.bed \
+                                           -S ${pol[$i]}  \
+                                           --referencePoint TSS \
+                                           -b 22000 -a 22000 \
+                                           --binSize=200 -p 20 \
+                                           --averageTypeBins mean \
+                                           --missingDataAsZero \
+                                           --outFileName ${window[$i]}
+
+   nice -19 computeMatrix reference-point -R raw_data/transcripts_${hg[$i]}.bed \
+                                          -S ${pol[$i]}  \
+                                          --referencePoint TES \
+                                          -b 22000 -a 22000 \
+                                          --binSize=200 -p 20 \
+                                          --averageTypeBins mean \
+                                          --missingDataAsZero \
+                                          --outFileName ${tes[$i]}
+
+done
+```
+
+
+
+
+```{r, fig.width=10, fig.height=10}
+
+group_mean <- function(signal_data, P, mask_regions, class_name='class_GROcap',
+                       start=-22000, end=22000, step=200, is_tss=T){
+    pos_vec = (start / step) : (end / step - 1) + .5
+
+    data_list = lapply(P$name, function(t_id){
+                gene_id = P[t_id, 'gene_id']
+                if (is_tss){
+                    mask = which(pos_vec < floor(mask_regions[gene_id, 'start'] / step))
+                } else {
+                    mask = which(pos_vec > floor(abs(mask_regions[gene_id, 'end']) / step))
+                }
+                row = signal_data[t_id,]
+                row[mask] = NA
+                return(c(class=as.character(P[t_id, class_name]), row))
+            })
+    data = do.call(rbind.data.frame, data_list)
+    mean_data = ddply(data, .(class), function(x){
+            colMeans(x[,2:ncol(x)], na.rm=T)
+    })
+    rownames(mean_data) = mean_data[,1]
+    total_mean = colMeans(data[,2:ncol(data)], na.rm=T)
+    data.frame(t(mean_data[,-1]),
+               pos=pos_vec * step, total_mean=total_mean)
+}
+
+mask_regions = read.table('../raw_data/gene_region_masks.txt', header=T,
+                     row.names=1, stringsAsFactors=F)
+
+
+
+p_selection = P[which(P$class_GROcap%in%c('escaper', 'iLAD') &
+                      (P$txEnd - P$txStart) > 22000), ]
+p_matched = matchSet(p_selection, 'class_GROcap', 'escaper', 'GROcap_K562')
+
+p_matched = p_matched[which(p_matched$name %in% rownames(POL2_tss)), ]
+escaper_vec = p_matched[which(p_matched$class_GROcap=='escaper'), 'name']
+ilad_vec = p_matched[which(p_matched$class_GROcap=='iLAD'), 'name']
+
+
+##POL2-ChIP
+POL2_tss_table = read.table('../raw_data/POL2A_K562_22000_window_ENCFF042CRO.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss = POL2_tss_table[,6:ncol(POL2_tss_table)]
+
+##POL2-ChIP
+POL2_tss_table_1b = read.table('../raw_data/POL2A_K562_22000_window_ENCSR000BMR.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss_1b = POL2_tss_table_1b[,6:ncol(POL2_tss_table_1b)]
+
+
+##POL2-ChIP 2
+POL2_tss_table_2 = read.table('../raw_data/POL2A_K562_22000_window_ENCFF827GEM.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss_2 = POL2_tss_table_2[,6:ncol(POL2_tss_table_2)]
+
+##POL2-ChIP 2
+POL2_tss_table_3 = read.table('../raw_data/POL2A_K562_22000_window_ENCFF647MSS.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss_3 = POL2_tss_table_3[,6:ncol(POL2_tss_table_3)]
+
+##POL2-ChIP 2
+POL2_tss_table_4 = read.table('../raw_data/POL2A_K562_22000_window_ENCFF348UKA.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tss_4 = POL2_tss_table_4[,6:ncol(POL2_tss_table_4)]
+
+
+POL2AS2_tss_table = read.table('../raw_data/POL2AS2_K562_22000_window_ENCFF354XDX.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2AS2_tss = POL2AS2_tss_table[,6:ncol(POL2AS2_tss_table)]
+
+POL2AS5_tss_table = read.table('../raw_data/POL2AS5_K562_22000_window_ENCFF827GEM.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2AS5_tss = POL2AS5_tss_table[,6:ncol(POL2AS5_tss_table)]
+
+
+##POL2-ChIP
+POL2_tes_table = read.table('../raw_data/POL2A_K562_22000_tes_ENCFF042CRO.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes = POL2_tes_table[,6:ncol(POL2_tes_table)]
+
+##POL2-ChIP
+POL2_tes_table_1b = read.table('../raw_data/POL2A_K562_22000_tes_ENCSR000BMR.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes_1b = POL2_tes_table_1b[,6:ncol(POL2_tes_table_1b)]
+
+##POL2-ChIP 2
+POL2_tes_table_2 = read.table('../raw_data/POL2A_K562_22000_tes_ENCFF827GEM.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes_2 = POL2_tes_table_2[,6:ncol(POL2_tes_table_2)]
+
+##POL2-ChIP 2
+POL2_tes_table_3 = read.table('../raw_data/POL2A_K562_22000_tes_ENCFF647MSS.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes_3 = POL2_tes_table_3[,6:ncol(POL2_tes_table_3)]
+
+##POL2-ChIP 2
+POL2_tes_table_4 = read.table('../raw_data/POL2A_K562_22000_tes_ENCFF348UKA.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2_tes_4 = POL2_tes_table_4[,6:ncol(POL2_tes_table_4)]
+
+POL2AS2_tes_table = read.table('../raw_data/POL2AS2_K562_22000_tes_ENCFF354XDX.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2AS2_tes = POL2AS2_tes_table[,6:ncol(POL2AS2_tes_table)]
+
+POL2AS5_tes_table = read.table('../raw_data/POL2AS5_K562_22000_tes_ENCFF827GEM.txt.gz',
+                            sep='\t', skip=1, stringsAsFactors=T, row.names=4)
+POL2AS5_tes = POL2AS5_tes_table[,6:ncol(POL2AS5_tes_table)]
+
+
+
+
+colMedians <- function(x, na.rm=T){
+    as.vector(apply(x, 2, median, na.rm=na.rm))
+}
+
+pos_vec = -110:109 * 200
+POL2_list = lapply(list(POL2_tss, POL2_tss_1b, POL2_tss_2, POL2_tss_3, POL2_tss_4,
+                        POL2AS2_tss, POL2AS5_tss),
+                   group_mean, p_matched, mask_regions)
+names(POL2_list)= c('pol2a_1a', 'pol2a_1b', 'pol2a_2', 'pol2a_3', 'pol2a_4',
+                    'pol2AS2', 'pol2AS5')
+for (pol in names(POL2_list)){
+    print(ggplot(POL2_list[[pol]], aes(x=pos, y=total_mean)) +
+                geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
+                geom_line() +
+                scale_linetype_manual(values = c(1,2)) +
+                ggtitle(pol))
+}
+
+POL2_tes_list = lapply(list(POL2_tes, POL2_tes_1b, POL2_tes_2, POL2_tes_3,
+                            POL2_tes_4, POL2AS2_tes, POL2AS5_tes),
+                       group_mean, p_matched, mask_regions, is_tss=F)
+names(POL2_tes_list)= c('pol2a_1a TES', 'pol2a_1b TES', 'pol2a_2 TES', 'pol2a_3 TES',
+                        'pol2a_4 TES', 'pol2AS2 TES', 'pol2AS5 TES')
+for (pol in names(POL2_tes_list)){
+    print(ggplot(POL2_tes_list[[pol]], aes(x=pos, y=total_mean)) +
+                geom_vline(xintercept=0, linetype='dotdash', size=0.2) +
+                geom_line() +
+                scale_linetype_manual(values = c(1,2)) +
+                ggtitle(pol))
+}
+
+```
+
+**conclusion:**
+
+Based on the ENCODE audit and visual inspection, I would say it is best to use ENCSR388QZF in downstream analysis.
+Visually I would say it is good data, since before the TSS there is nice and low background with a peak at the TSS, followed by an increase in POL2 (compared to background) on the gene-body going back to background after TES.
+
+
+## How to measure POL2 on gene-body and TSS
+I found a paper about measuring promoter proximal stalling of transcription: ["Comprehensive analysis of promoter-proximal RNA polymerase II pausing across mammalian cell types"](https://dx.doi.org/10.1186%2Fs13059-016-0984-2).
+This paper uses a region of -50 to +300bp around the TSS to measure POL2 on the start site and compares this to a region of +300bp to +3kb past the transcription start site.
+
+Previously I only looked at the first 3000bp in the gene-body, to I also added this one for
+comparison.
+
+```
+pol[1]=~/mydata/data/tracks/hg38/POL2A_K562_ENCFF042CRO.bigWig
+pol[2]=~/mydata/data/tracks/hg19/POL2/POL2_K562_fcoc_ENCSR000BMR.bigWig
+pol[3]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF552VTT.bigWig
+pol[4]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF647MSS.bigWig
+pol[5]=~/mydata/data/tracks/hg19/POL2A_K562_fcoc_ENCFF348UKA.bigWig
+pol[6]=~/mydata/data/tracks/hg19/POL2AS2_K562_ENCFF354XDX.bigWig
+pol[7]=~/mydata/data/tracks/hg19/K562_POL2AS5_fcoc_ENCFF827GEM.bigWig
+
+hg[1]=hg38
+hg[2]=hg19
+hg[3]=hg19
+hg[4]=hg19
+hg[5]=hg19
+hg[6]=hg19
+hg[7]=hg19
+
+id[1]=ENCFF042CRO
+id[2]=ENCSR000BMR
+id[3]=ENCFF552VTT
+id[4]=ENCFF647MSS
+id[5]=ENCFF348UKA
+id[6]=ENCFF354XDX
+id[7]=ENCFF827GEM
+
+for i in 1 2 3 4 5 6 7
+do
+    bwtool summary -header \
+               -with-sum \
+               -skip-median \
+               -keep-bed \
+              <(awk -vOFS='\t' '{
+                  if ($6=="+"){
+                      start = $2 - 50
+                      end = $2 + 300
+                  } else {
+                      start = $3 - 300
+                      end = $3 + 50
+                  }
+                  start = start > 0 ? start : 0 ;
+                  end = end > 0 ? end : 0 ;
+                  print $1, start, end, $4, 0, $6}' raw_data/transcripts_${hg[$i]}.bed) \
+              ${pol[$i]} \
+              /dev/stdout | gzip -c > raw_data/tssr_POL2A_K562_${id[$i]}.txt.gz &
+    bwtool summary -header \
+                   -with-sum \
+                   -skip-median \
+                   -keep-bed \
+                  <(awk -vOFS='\t' '{
+                      if ($6=="+"){
+                          start = $2 + 300
+                          end = $3 + 3000
+                      } else {
+                          start = $2 - 3000
+                          end = $3 - 300
+                      }
+                      start = start > 0 ? start : 0 ;
+                      end = end > 0 ? end : 0 ;
+                      print $1, start, end, $4, 0, $6}' raw_data/transcripts_${hg[$i]}.bed) \
+                  ${pol[$i]} \
+                  /dev/stdout | gzip -c > raw_data/body_POL2A_K562_${id[$i]}.txt.gz &
+
+done
+
+i=1
+bwtool summary -header \
+               -with-sum \
+               -skip-median \
+               -keep-bed \
+              <(awk -vOFS='\t' '{
+                  if ($6=="+"){
+                      start = $2 + 300
+                      end = $2 + 3000
+                  } else {
+                      start = $3 - 3000
+                      end = $3 - 300
+                  }
+                  start = start > 0 ? start : 0 ;
+                  end = end > 0 ? end : 0 ;
+                  print $1, start, end, $4, 0, $6}' raw_data/transcripts_${hg[$i]}.bed) \
+              ${pol[$i]} \
+              /dev/stdout | gzip -c > raw_data/body_first3000_POL2A_K562_${id[$i]}.txt.gz &
+
+
+
+## previous analysis based on bam files
+nice -19 bedtools coverage -counts \
+                -abam ~/data/tracks/hg19/ENCFF000QDM.bam \
+                -b raw_data/tssr.bed | \
+                gzip -c > raw_data/tssr_POL2A_rep1_ENCFF000QDM.count.txt.gz &
+nice -19 bedtools coverage -counts \
+                -abam ~/data/tracks/hg19/ENCFF000QDN.bam \
+                -b raw_data/tssr.bed | \
+                gzip -c > raw_data/tssr_POL2A_rep2_ENCFF000QDN.count.txt.gz &
+nice -19 bedtools coverage -counts \
+                -abam ~/data/tracks/hg19/ENCFF000QDM.bam \
+                -b raw_data/gene_body.bed | \
+                gzip -c > raw_data/gene_body_POL2A_rep1_ENCFF000QDM.count.txt.gz &
+nice -19 bedtools coverage -counts \
+                -abam ~/data/tracks/hg19/ENCFF000QDN.bam \
+                -b raw_data/gene_body.bed | \
+                gzip -c > raw_data/gene_body_POL2A_rep2_ENCFF000QDN.count.txt.gz &
+
+
+```
+
+
+```{r, fig.width=10, fig.height=10}
+
+id_vec = c('ENCFF042CRO', 'ENCSR000BMR', 'ENCFF552VTT', 'ENCFF647MSS', 'ENCFF348UKA',
+           'ENCFF354XDX', 'ENCFF827GEM')
+
+tssr_file_vec = paste0('../raw_data/tssr_POL2A_K562_', id_vec, '.txt.gz')
+body_file_vec = paste0('../raw_data/body_POL2A_K562_', id_vec, '.txt.gz')
+
+tssr_list = lapply(tssr_file_vec, read.table, row.names=4,
+                   col.names=c('chrom', 'start', 'end', 'name', 'score',
+                               'strand', 'size', 'num_data', 'min', 'max',
+                               'mean', 'sum'), stringsAsFactors=F)
+body_list = lapply(body_file_vec, read.table, row.names=4,
+                   col.names=c('chrom', 'start', 'end', 'name', 'score',
+                               'strand', 'size', 'num_data', 'min', 'max',
+                               'mean', 'sum'), stringsAsFactors=F)
+
+
+names(tssr_list) = names(body_list) = c('pol2a_1a', 'pol2a_1b', 'pol2a_2',
+                                        'pol2a_3', 'pol2a_4', 'pol2AS2',
+                                        'pol2AS5')
+
+for (name in names(tssr_list)){
+    data = data.frame(tssr=tssr_list[[name]][p_matched$name, 'mean'],
+                      body=body_list[[name]][p_matched$name, 'mean'],
+                      class=p_matched$class_GROcap)
+    print(ggplot(melt(data), aes(x=class, y=pseudo_log10(value), fill=class)) +
+              geom_violin() +
+              ggtitle(name) +
+              geom_point(position=position_jitter(width=0.1), alpha=0.5, size=0.5) +
+              scale_fill_manual(values=COL_class) +
+              xlab('promoter class') +
+              facet_wrap('variable'))
+
+}
+
+previous_body = read.table('../raw_data/body_first3000_POL2A_K562_ENCFF042CRO.txt.gz',
+                           row.names=4, stringsAsFactors=F,
+                           col.names=c('chrom', 'start', 'end', 'name', 'score',
+                                       'strand', 'size', 'num_data', 'min', 'max',
+                                       'mean', 'sum'))
+data = data.frame(tssr=tssr_list[['pol2a_1a']][p_matched$name, 'mean'],
+                  body=previous_body[p_matched$name, 'mean'],
+                  class=p_matched$class_GROcap)
+ggplot(melt(data), aes(x=class, y=pseudo_log10(value), fill=class)) +
+        geom_violin() +
+        ggtitle('previous plot, based on bigWig hg38') +
+        geom_point(position=position_jitter(width=0.1), alpha=0.5, size=0.5) +
+        scale_fill_manual(values=COL_class) +
+        xlab('promoter class') +
+        facet_wrap('variable')
+
+count_file_vec = list.files('../raw_data', pattern='POL2A_[rc][et]')
+count_file_vec = grep('prom_window', count_file_vec, value=T, invert=T)
+
+count_list = lapply(count_file_vec, function(x){
+        gr = import.bed(paste0('../raw_data/', x))
+        score(gr) = start(gr$thick) / width(gr)
+        return(gr)
+    })
+
+name_list = lapply(strsplit(count_file_vec, '_'), function(x){
+        if (x[1]=='gene'){
+            r = paste(x[2:4], collapse='_')
+        } else {
+            r = paste(x[1:3], collapse='_')
+        }
+        return(r)
+    })
+names(count_list) = unlist(name_list)
+
+
+score_table = do.call(cbind,lapply(count_list,function(x){score(x)}))
+
+tssr_POL2A = rowMeans(score_table[,c('tssr_POL2A_rep1', 'tssr_POL2A_rep2')]) /
+             rowMeans(score_table[,c('tssr_POL2A_ctrl1', 'tssr_POL2A_ctrl2')])
+names(tssr_POL2A) = count_list[[1]]$name
+
+body_POL2A = rowMeans(score_table[,c('body_POL2A_rep1', 'body_POL2A_rep2')]) /
+             rowMeans(score_table[,c('body_POL2A_ctrl1', 'body_POL2A_ctrl2')])
+names(body_POL2A) = count_list[[1]]$name
+
+data = data.frame(tssr=tssr_POL2A[p_matched$name],
+                  body=body_POL2A[p_matched$name],
+                  class=p_matched$class)
+ggplot(melt(data), aes(x=class, y=pseudo_log10(value), fill=class)) +
+      geom_violin() +
+      ggtitle('previous plot, based on bam-files hg19') +
+      geom_point(position=position_jitter(width=0.1), alpha=0.5, size=0.5) +
+      scale_fill_manual(values=COL_class) +
+      xlab('promoter class') +
+      facet_wrap('variable')
+```
+
+**conclusion:**
+
+I previously made some mistakes in analyzing the data, also I took a data-set with
+very low signal on gene body, which made it difficult to see any differences.
+The data-set of highest quality shows a more clear picture and since background
+levels are low, I think we can trust this analysis more.
+
+One consideration for me is still the region in which to measure the signal on the
+gene-body. Maybe a region of constant length, way before the TES would be better.

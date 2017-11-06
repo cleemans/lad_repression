@@ -1,0 +1,510 @@
+
+
+
+```{r}
+library(BSgenome)
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+fyshuffle <-function(x){
+  n <- length(x)
+  i <- n
+  for (i in n:1){
+    j <- floor(runif(1) * i+1)
+    if (i != j){
+      temp <- x[i]
+      x[i] <- x[j]
+      x[j] <- temp
+    }
+  }
+  return(x)
+}
+
+## Did not want to go through the hassle of install complete TFBStools package, since it was
+## complaining abount dependencies. And I only needed JASPAR motif parsing functionality.
+## So I copied the function from TFBSTools.
+## <<< copied from TFBSTools >>>
+### -----------------------------------------------------------------
+### readJASPARMatrix: read the jaspar format PFM in txt file
+### "individual" format:
+### >MA0001.1 AGL3
+### A  [ 0  3 79 40 66 48 65 11 65  0 ]
+### C  [94 75  4  3  1  2  5  2  3  3 ]
+### G  [ 1  0  3  4  1  0  5  3 28 88 ]
+### T  [ 2 19 11 50 29 47 22 81  1  6 ]
+### "all" format: multiple "individual" matrices and seperated with a blank line
+### Exported
+.processJASPARText <- function(text){
+  ID <- sub("^>", "", strsplit(text[1], "\t")[[1]][1])
+  name <- strsplit(text[1], "\t")[[1]][2]
+  if(!identical(substr(text[2:5], 1, 1), DNA_BASES)){
+    stop("The second to fifth lines of the file must start with",
+         "`A`, `C`, `G`, `T`, respectively.")
+  }
+  profileMatrix <- do.call(rbind, strsplit(sub(" *]$", "",
+                                               sub("^(A|C|G|T) +\\[ *", "",
+                                                   text[2:5])), " +"))
+  mode(profileMatrix) <- "integer"
+  rownames(profileMatrix) <- DNA_BASES
+  ## changed the following part:
+  # ans <- PFMatrix(ID=ID, name=name, profileMatrix=profileMatrix)
+  ans <- list(ID=ID, name=name, profileMatrix=profileMatrix)
+}
+
+readJASPARMatrix <- function(fn, type=c("individual", "all")){
+  type <- match.arg(type)
+  text <- readLines(fn)
+  if(type == "individual"){
+    if(length(text) != 5L){
+      stop("The `individual` format is supposed to have 5 lines!")
+    }
+    ans <- .processJASPARText(text)
+  }else{
+    if(length(text) %% 6 != 0L){
+      stop("The `all` format is supposed to have a number of lines",
+           "mutipled by 6!")
+    }
+    text2 <- split(text, rep(1:(length(text)/6), rep(6, length(text)/6)))
+    ans <- lapply(text2, .processJASPARText)
+    # ans <- do.call(PFMatrixList, ans)
+  }
+  return(ans)
+}
+## <<< end of copie >>>>
+
+writeJASPARMatrix <- function(jasp, file_name){
+  line_list = c(paste0('>',jasp$ID,'\t', jasp$name),
+               lapply(DNA_BASES, function(x, m){
+                          paste(c(x, '[', m[x, ], ']'), collapse='\t')
+                      }, m=jasp$profileMatrix))
+  writeLines(unlist(line_list), file_name)
+}
+
+
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+```
+
+
+```{r}
+tf_table = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1,
+                      stringsAsFactors=F)
+colnames(tf_table) = c('name', 'species', 'class', 'family')
+
+tf_translation = ddply(tf_table[,c('species','name')], .(name),
+                       function(x){
+                         symbol = gsub('[(]var.[0-9][)]','', x[,2])
+                         cbind(x,symbol=unlist(strsplit(symbol, '::')))
+                       })
+tf_translation$symbol = as.character(tf_translation$symbol)
+
+find_symbol <- function(symbol, id_table){
+    result = id_table[which(id_table$symbol==toupper(symbol)),'gene_id']
+    if (length(result) == 0){
+        result = NA
+    } else {
+        table = table(result)
+        result = names(which.max(table))
+    }
+    return(result)
+}
+
+
+tf_translation$gene_id = unlist(lapply(tf_translation$symbol, find_symbol,
+                                       id_table))
+
+rnaseq_rep1 = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/K562_rna_rep2_ENCFF222NCB.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+fpkm_rep1 = rnaseq_rep1[tf_translation$gene_id, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[tf_translation$gene_id, 'pme_FPKM']
+tf_translation$K562_fpkm = pseudo_log10(rowMeans(cbind(fpkm_rep1, fpkm_rep2)))
+tf_expression = ddply(tf_translation,.(name),
+                      function(x){
+                          c(expression=min(x$K562_fpkm))
+                      })
+tf_table$K562_fpkm = NaN
+tf_match = match(tf_expression$name, tf_table$name)
+tf_table$K562_fpkm[tf_match] = tf_expression$expression
+
+
+tf_vec = rownames(tf_table)[which(tf_table$K562_fpkm > 0)]
+tf_vec = tf_vec[-grep('MA9999.9', tf_vec)]
+
+for (x in tf_vec){
+    in_file = paste0('../raw_data/Jaspar-Core16_pseudo/', x, '.pwm')
+    jasp = readJASPARMatrix(in_file, 'individual')
+    ID = jasp$ID
+    jasp$ID = paste0(ID, '_real')
+    out_file = paste0('../raw_data/Jaspar-Core16_K562_shuffle/', jasp$ID, '.pwm')
+    writeJASPARMatrix(jasp, out_file)
+    profileMatrix = jasp$profileMatrix
+    for (i in 1:100){
+      fy = fyshuffle(1:ncol(profileMatrix))
+      jasp$profileMatrix = profileMatrix[, fy]
+      jasp$ID = paste0(ID, '_shuffle', i)
+      out_file = paste0('../raw_data/Jaspar-Core16_K562_shuffle/', jasp$ID, '.pwm')
+      writeJASPARMatrix(jasp, out_file)
+    }
+}
+
+tf_type = read.table('../raw_data/12859_2016_1349_MOESM2_ESM.csv',sep='\t', header=T, stringsAsFactors=F)
+match_vec = match(toupper(tf_table$name), tf_type$Symbol)
+tf_table$tf_type = NA
+tf_table[!is.na(match_vec), 'tf_type'] = tf_type[match_vec[!is.na(match_vec)], 'Chromatin.Opening.Type']
+```
+
+
+```
+dir=raw_data/Jaspar-Core16_K562_shuffle/
+for f in $(ls $dir)
+do
+  name="${f%.*}"
+  title=$(head -n1 $dir/$f | sed 's/>//' | sed 's/[[:space:]]/_/')
+  Convert2PSAM -source=ja -inp=$REDUCE_SUITE/data/formats/jaspar_ex2.dat \
+               -infFile=$dir/$f -psam=$dir/PSAMs/$name.xml
+done
+
+ls $dir/PSAMs/*.xml > $dir/PSAMs/Jaspar_2016.list
+```
+```{r}
+
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense', 'HEPG2.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:14]<-c("SuRE_K562", "SuRE_HepG2", "SuRE_HT1080", "GROcap_K562",
+                  "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+for (col in c('SuRE_K562', 'SuRE_HepG2', 'SuRE_HT1080', 'GROcap_K562',
+              'CAGE_K562_encode')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+P$gene_id = id_table[P$name,'gene_id']
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                            start=P$txStart,
+                                            end=P$txEnd,
+                                            strand=P$strand,
+                                            name=P$name,
+                                            tss=P$tss),
+                                            keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                       gene_gr$tss)
+names(tss_gr) = P$name
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+P$LRS_GROcap <- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+writeLines(P[P$class%in%c('escaper', 'repressed'), 'name'], 'cl20171010_eandr_list.txt')
+```
+
+
+```
+awk -F':' '{
+  if(NR==FNR){
+    a[">"$0] = 1
+  } else if ($0 ~ />/){
+    id=$1
+  } else if (id in a){
+    print id;
+    print $0
+}}' workspace/cl20171010_eandr_list.txt raw_data/tssr_300_300.fa > \
+raw_data/tssr_300_300_evsr.fa
+
+AffinityProfile -sequence=raw_data/tssr_300_300_evsr.fa \
+                -strand=2 \
+                -psam_list=raw_data/Jaspar-Core16_K562_shuffle/PSAMs/Jaspar_2016.list \
+                -output=raw_data/jaspar_affinity_evsr_shuffle
+
+```
+
+
+```{r}
+aff_table = read.table('../raw_data/jaspar_affinity_evsr_shuffle/seq_psam.dat',
+                       stringsAsFactors=F)
+
+p_matched = matchSet(P[P$class%in%c('repressed', 'escaper'), ], 'class', 'escaper',
+                     'SuRE_K562')
+
+tf_vec = gsub('_real.*', '', grep('real', colnames(aff_table), value=T))
+
+escaper_vec = p_matched[p_matched$class=='escaper', 'name']
+mean_rank_list = lapply(tf_vec, function(tf, aff_data){
+        col_vec = grep(tf, colnames(aff_data), value = T)
+        aff = aff_data[,col_vec]
+        rank_matrix = apply(aff, 2, rank)
+        mean_vec = apply(rank_matrix[escaper_vec,], 2, mean)
+        return(cbind(mean_vec, gsub('.*_([a-z]+)[0-9]*..*', '\\1', col_vec),
+                     tf))
+    }, aff_data=aff_table[p_matched$name, ])
+
+mean_rank_matrix = do.call(rbind, mean_rank_list)
+mean_rank_data = as.data.frame(mean_rank_matrix, stringsAsFactors=F)
+colnames(mean_rank_data) = c('mean_rank', 'simtype', 'tf_id')
+mean_rank_data$mean_rank = as.numeric(mean_rank_data$mean_rank)
+mean_rank_data$tf_type = tolower(tf_table[mean_rank_data$tf_id, 'tf_type'])
+mean_rank_data$tf_name = tf_table[mean_rank_data$tf_id, 'name']
+
+pdf('boxplot.pdf', width=80, height=10)
+ggplot(mean_rank_data, aes(x=paste(tf_type, tf_name), y=mean_rank, color=tf_type)) +
+    geom_boxplot(data=mean_rank_data[mean_rank_data$simtype=='shuffle', ],
+                 outlier.shape=NA) +
+    geom_point(data=mean_rank_data[mean_rank_data$simtype=='real', ]) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dev.off()
+
+
+mean_shuffle_list = lapply(tf_vec, function(tf, aff_data){
+        col_vec = grep(paste0(tf, '_shuffle'), colnames(aff_data), value = T)
+        aff = aff_data[,col_vec]
+        rank_matrix = apply(aff, 2, rank)
+        mean_vec = apply(rank_matrix[escaper_vec,], 2, mean)
+        return(mean(mean_vec))
+    }, aff_data=aff_table[p_matched$name, ])
+mean_shuffle_data = data.frame(tf_name=tf_table[tf_vec, 'name'],
+                               mean=unlist(mean_shuffle_list),
+                               tf_type=tolower(tf_table[tf_vec, 'tf_type']),
+                               type='shuffle')
+
+real_list = lapply(tf_vec, function(tf, aff_data){
+       real = grep(paste0(tf, '_real'), colnames(aff_data), value = T)
+       rank_vec = rank(aff_data[,real])
+       names(rank_vec) = rownames(aff_data)
+       return(mean(rank_vec[escaper_vec]))
+   }, aff_data=aff_table[p_matched$name, ])
+real_data = data.frame(tf_name=tf_table[tf_vec, 'name'],
+                       mean=unlist(real_list),
+                       tf_type=tolower(tf_table[tf_vec, 'tf_type']),
+                       type='real')
+data = rbind.data.frame(mean_shuffle_data, real_data)
+
+pdf('mean_shuffle.pdf')
+ggplot(data, aes(x=tf_type, y=mean, color=tf_type)) +
+    geom_violin() +
+    geom_hline(yintercept=mean(1:nrow(p_matched))) +
+    geom_point(position = position_jitter(width=0.1), size=0.3) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    facet_wrap(~type)
+dev.off()
+
+aff_table2 = round(aff_table, 3)
+mean_rank_list = lapply(tf_vec, function(tf, aff_data){
+        col_vec = grep(tf, colnames(aff_data), value = T)
+        aff = aff_data[,col_vec]
+        rank_matrix = apply(aff, 2, rank)
+        mean_vec = apply(rank_matrix[escaper_vec,], 2, mean)
+        return(cbind(mean_vec, gsub('.*_([a-z]+)[0-9]*..*', '\\1', col_vec),
+                     tf))
+    }, aff_data=aff_table2[p_matched$name, ])
+
+mean_rank_matrix = do.call(rbind, mean_rank_list)
+mean_rank_data = as.data.frame(mean_rank_matrix, stringsAsFactors=F)
+colnames(mean_rank_data) = c('mean_rank', 'simtype', 'tf_id')
+mean_rank_data$mean_rank = as.numeric(mean_rank_data$mean_rank)
+mean_rank_data$tf_type = tolower(tf_table[mean_rank_data$tf_id, 'tf_type'])
+mean_rank_data$tf_name = tf_table[mean_rank_data$tf_id, 'name']
+
+pdf('boxplot_round.pdf', width=80, height=10)
+ggplot(mean_rank_data, aes(x=paste(tf_type, tf_name), y=mean_rank, color=tf_type)) +
+    geom_boxplot(data=mean_rank_data[mean_rank_data$simtype=='shuffle', ],
+                 outlier.shape=NA) +
+    geom_point(data=mean_rank_data[mean_rank_data$simtype=='real', ]) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dev.off()
+
+
+mean_shuffle_list = lapply(tf_vec, function(tf, aff_data){
+        col_vec = grep(paste0(tf, '_shuffle'), colnames(aff_data), value = T)
+        aff = aff_data[,col_vec]
+        rank_matrix = apply(aff, 2, rank)
+        mean_vec = apply(rank_matrix[escaper_vec,], 2, mean)
+        return(mean(mean_vec))
+    }, aff_data=aff_table2[p_matched$name, ])
+mean_shuffle_data = data.frame(tf_name=tf_table[tf_vec, 'name'],
+                               mean=unlist(mean_shuffle_list),
+                               tf_type=tolower(tf_table[tf_vec, 'tf_type']),
+                               type='shuffle')
+
+real_list = lapply(tf_vec, function(tf, aff_data){
+       real = grep(paste0(tf, '_real'), colnames(aff_data), value = T)
+       rank_vec = rank(aff_data[,real])
+       names(rank_vec) = rownames(aff_data)
+       return(mean(rank_vec[escaper_vec]))
+   }, aff_data=aff_table2[p_matched$name, ])
+real_data = data.frame(tf_name=tf_table[tf_vec, 'name'],
+                       mean=unlist(real_list),
+                       tf_type=tolower(tf_table[tf_vec, 'tf_type']),
+                       type='real')
+data = rbind.data.frame(mean_shuffle_data, real_data)
+
+pdf('mean_shuffle_round.pdf')
+ggplot(data, aes(x=tf_type, y=mean, color=tf_type)) +
+    geom_violin() +
+    geom_hline(yintercept=mean(1:nrow(p_matched))) +
+    geom_point(position = position_jitter(width=0.1), size=0.3) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    facet_wrap(~type)
+dev.off()
+
+
+
+
+rank_list = lapply(tf_vec, function(x, aff_data){
+  aff = aff_data[,grep(x, colnames(aff_data))]
+  in_top = apply(aff, 1, function(y){
+    r = rank(y)
+    r[grep('real', names(r))]
+  })
+}, aff_data=aff_table[p_matched$name, ])
+
+rank_data = do.call(cbind.data.frame, rank_list)
+colnames(rank_data) = tf_vec
+
+
+
+test_list = lapply(tf_vec, function(x, class_vec){
+  t.test(rank_data[class_vec=='escaper',x],
+         rank_data[class_vec=='repressed',x],
+         alternative = "greater")
+}, class_vec = as.character(P[rownames(rank_data), 'class']))
+
+
+p_vec = unlist(lapply(test_list, function(x){x$p.value}))
+
+data = data.frame(p=p_vec,
+                  name=tf_table[tf_vec, 'name'],
+                  family=tf_table[tf_vec, 'family'],
+                  type=tolower(tf_table[tf_vec, 'tf_type']))
+
+ggplot(data, aes(x=type, y=log2(p))) +
+  geom_violin() +
+  geom_point(position=position_jitter(width=0.2)) +
+  geom_hline(yintercept=log2(0.025))
+
+
+diff_list = lapply(tf_vec, function(x, class_vec){
+  mean(rank_data[class_vec=='escaper',x]) /
+    mean(rank_data[class_vec=='repressed',x])
+}, class_vec = as.character(P[rownames(rank_data), 'class']))
+
+
+data$log_fc = log2(unlist(diff_list))
+
+ggplot(data, aes(x=type, y=log_fc)) +
+  geom_violin() +
+  geom_point(position=position_jitter(width=0.2))
+
+```

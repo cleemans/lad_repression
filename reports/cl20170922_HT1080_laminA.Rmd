@@ -1,0 +1,560 @@
+# r document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 22-09-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains. But we've only looked at
+LaminB, not Lamin A/C. We can look at this with HT-1080 data.
+
+## Different promoter classes of lamina associated transcripts.
+
+Comparing autonomous promoter activity measured by SuRE and endogenous promoter activity
+
+
+## library and data loading
+```{r, fig.width=10, fig.height=10, echo=FALSE, fig.width=10, fig.height=10}
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense', 'HEPG2.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:14]<-c("SuRE_K562", "SuRE_HepG2", "SuRE_HT1080", "GROcap_K562",
+                  "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+
+for (col in c('SuRE_K562', 'SuRE_HepG2', 'SuRE_HT1080', 'GROcap_K562')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+P$gene_id = id_table[P$name,'gene_id']
+
+most_active <- function(P){
+  result = ddply(P, .(gene_id), function(x){
+      if (nrow(x)==1){
+          result = x[1,]
+      } else {
+          result = x[order(x$SuRE_K562, decreasing=T)[1],]
+      }
+      return(result)
+  })
+  rownames(result) = result$name
+  return(result)
+}
+
+p_most_active = most_active(P)
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+  p_new = P[p_new_names, ]
+  active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                 start=p_new$tss,
+                                                 end=p_new$tss,
+                                                 strand=p_new$strand),
+                                                 keep.extra.columns=TRUE)
+  other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                 start=p_other$tss,
+                                                 end=p_other$tss,
+                                                 strand=p_other$strand),
+                                                 keep.extra.columns=TRUE)
+  o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+  sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+  p_other = p_other[-subjectHits(sub_o), ]
+  p_active = most_active(p_other)
+  p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+  p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                            start=P$txStart,
+                                            end=P$txEnd,
+                                            strand=P$strand,
+                                            name=P$name,
+                                            tss=P$tss),
+                                            keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                       gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+LAD_K562 = import.bed('/home/t.v.schaik/mydata/proj/3D_nucleus/results/ts170821_GCF4577_K562_p13_LMNB1/results/HMM/K562_lamina_10kb_LADs.bed')
+o = findOverlaps(tss_gr, LAD_K562)
+P$LAD_K562_seq = 0
+P$LAD_K562_seq[queryHits(o)] = 1
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+
+LAD_HepG2 = import.bed('~t.v.schaik/mydata/proj/3D_nucleus/results/ts170828_GCF4579_2xHEPG2_RPE_HFF/results/HMM/HEPG2_lamina_LADs.bed')
+o = findOverlaps(tss_gr, LAD_HepG2)
+P$LAD_HepG2 = 0
+P$LAD_HepG2[queryHits(o)] = 1
+
+```
+
+## CAGE calculation
+I am using different data from Joris, since HT1080 was not in the ENCODE data, only in the Fantom data. There are some mayor differences between these datasets, whereas previous data was poly-A selected and PCR-amplified, Fantom did not select, nor did it PCR-amplify
+
+
+```bash
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/K562_ENCODE_biol_rep1.CNhs12334.10824-111C5.hg19.nobarcode.bam > results/tss_CAGE_K562_rep1.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/K562_ENCODE_biol_rep2.CNhs12335.10825-111C6.hg19.nobarcode.bam > results/tss_CAGE_K562_rep2.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/HT-1080.CNhs11860.10758-110E2.hg19.nobarcode.bam  > results/tss_CAGE_HT1080.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/HepG2_ENCODE_biol_rep1.CNhs12328.10818-111B8.hg19.nobarcode.bam > results/tss_CAGE_HepG2_rep1.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/HepG2_ENCODE_biol_rep2.CNhs12329.10819-111B9.hg19.nobarcode.bam > results/tss_CAGE_HepG2_rep2.bed
+
+bedtools intersect -c -s -a <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) -b ~c.leemans/mydata/data/tracks/hg19/HepG2_ENCODE_biol_rep3.CNhs12330.10820-111C1.hg19.nobarcode.bam > results/tss_CAGE_HepG2_rep3.bed
+
+```
+
+```{r}
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+HepG2_CAGE_rep1 = read.table('../results/tss_CAGE_HepG2_rep1.bed')
+HepG2_CAGE_rep2 = read.table('../results/tss_CAGE_HepG2_rep2.bed')
+HepG2_CAGE_rep3 = read.table('../results/tss_CAGE_HepG2_rep3.bed')
+
+
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+HepG2_CAGE = rowSums(cbind(HepG2_CAGE_rep1[,7], HepG2_CAGE_rep2[,7],
+                           HepG2_CAGE_rep3[,7]))
+
+P$CAGE_K562 = K562_CAGE[p_complete%in%rownames(P)]
+P$CAGE_HT1080 = HT1080_CAGE[p_complete%in%rownames(P),7]
+P$CAGE_HepG2 = HepG2_CAGE[p_complete%in%rownames(P)]
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('CAGE_K562', 'CAGE_HT1080', 'CAGE_HepG2')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+```
+
+
+## DNAse accessibility
+Maybe DNAse signal can be used as an extra proxy so we can build a multi-dimensional classifier with CAGE and DNAse.
+
+```bash
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/K562_rep1_ENCFF001BSF.bigWig /dev/stdout > results/tss_DNAse_K562_rep1.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/K562_rep2_ENCFF001DPE.bigWig /dev/stdout > results/tss_DNAse_K562_rep2.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/HT1080_rep1_ENCFF930ZWL.bigWig /dev/stdout > results/tss_DNAse_HT1080_rep1.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/HT1080_rep2_ENCFF760VXZ.bigWig /dev/stdout > results/tss_DNAse_HT1080_rep2.txt
+
+bwtool summary -header <(awk -vOFS='\t' '{print $1, $2 - 500, $3 + 500, $4, $5, $6}' workspace/tss.bed) ~/mydata/data/tracks/hg19/DNase-seq/GSM2400287_ENCFF646UXG_signal_of_unique_reads_hg19.bigWig /dev/stdout > results/tss_DNAse_HepG2.txt
+
+
+
+```
+
+```{r, fig.width=10, fig.height=10}
+K5_DNAse_rep1 = read.table('../results/tss_DNAse_K562_rep1.txt')
+K5_DNAse_rep2 = read.table('../results/tss_DNAse_K562_rep2.txt')
+K5_DNAse_rep1[,7][is.na(K5_DNAse_rep1[,7])] = K5_DNAse_rep2[,7][is.na(K5_DNAse_rep2[,7])] = 0
+
+
+DNAse_K562 = rowMeans(cbind(K5_DNAse_rep1[,7], K5_DNAse_rep2[,7]))
+P$DNAse_K562 = DNAse_K562[p_complete%in%rownames(P)]
+
+
+
+HT_DNAse_rep1 = read.table('../results/tss_DNAse_HT1080_rep1.txt')
+HT_DNAse_rep2 = read.table('../results/tss_DNAse_HT1080_rep2.txt')
+HT_DNAse_rep1[,7][is.na(HT_DNAse_rep1[,7])] = HT_DNAse_rep2[,7][is.na(HT_DNAse_rep2[,7])] = 0
+
+
+DNAse_HT1080 = rowMeans(cbind(HT_DNAse_rep1[,7], HT_DNAse_rep2[,7]))
+P$DNAse_HT1080 = DNAse_HT1080[p_complete%in%rownames(P)]
+
+
+
+HepG2_DNAse = read.table('../results/tss_DNAse_HepG2.txt')
+P$DNAse_HepG2 = HepG2_DNAse[p_complete%in%rownames(P), 7]
+
+for (col in c('DNAse_K562', 'DNAse_HT1080', 'DNAse_HepG2')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+```
+
+
+
+```{r}
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+RM_GRO_seq = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562_seq')
+RM_K562 = create_RM(P, 'SuRE_K562', 'CAGE_K562', lad='LAD_K562')
+RM_HT1080 = create_RM(P, 'SuRE_HT1080', 'CAGE_HT1080', lad='LAD_HT1080')
+RM_HepG2 = create_RM(P, 'SuRE_HepG2', 'CAGE_HepG2', lad='LAD_HepG2')
+P$LRS_GROcap <- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+P$LRS_GROcap_seq <- P$GROcap_K562 - approx(x=RM_GRO_seq$x.mean, y=RM_GRO_seq$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+P$LRS_K562 <- P$CAGE_K562 - approx(x=RM_K562$x.mean, y=RM_K562$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+P$LRS_HT1080 <- P$CAGE_HT1080 - approx(x=RM_HT1080$x.mean, y=RM_HT1080$y.ilad, xout=P$SuRE_HT1080, rule=2)$y
+
+P$LRS_HepG2 <- P$CAGE_HepG2 - approx(x=RM_HepG2$x.mean, y=RM_HepG2$y.ilad, xout=P$SuRE_HepG2, rule=2)$y
+
+lad_names_K562 = c(LAD=paste0('LAD; n=', table(P$LAD_K562)['1']),
+                   iLAD=paste0('iLAD; n=', table(P$LAD_K562)['0']))
+P$lad_K562_n = factor(ifelse(P$LAD_K562==1, lad_names_K562['LAD'], lad_names_K562['iLAD']))
+COL_lad_K562_n = COL_lad
+names(COL_lad_K562_n) = lad_names_K562
+
+lad_names_K562 = c(LAD=paste0('LAD; n=', table(P$LAD_K562_seq)['1']),
+                   iLAD=paste0('iLAD; n=', table(P$LAD_K562_seq)['0']))
+P$lad_K562_seq_n = factor(ifelse(P$LAD_K562_seq==1, lad_names_K562['LAD'], lad_names_K562['iLAD']))
+COL_lad_K562_seq_n = COL_lad
+names(COL_lad_K562_seq_n) = lad_names_K562
+
+
+
+lad_names_HT1080 = c(LAD=paste0('LAD; n=', table(P$LAD_HT1080)['1']),
+                     iLAD=paste0('iLAD; n=', table(P$LAD_HT1080)['0']))
+P$lad_HT1080_n = factor(ifelse(P$LAD_HT1080==1, lad_names_HT1080['LAD'], lad_names_HT1080['iLAD']))
+COL_lad_HT1080_n = COL_lad
+names(COL_lad_HT1080_n) = lad_names_HT1080
+
+lad_names_HepG2 = c(LAD=paste0('LAD; n=', table(P$LAD_HepG2)['1']),
+                     iLAD=paste0('iLAD; n=', table(P$LAD_HepG2)['0']))
+P$lad_HepG2_n = factor(ifelse(P$LAD_HepG2==1, lad_names_HepG2['LAD'], lad_names_HepG2['iLAD']))
+COL_lad_HepG2_n = COL_lad
+names(COL_lad_HepG2_n) = lad_names_HepG2
+
+
+
+```
+
+
+**conclusions:**
+
+Although the spread of the data is different between cell-types, this seems to have worked quite nicely.
+
+```{r}
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+P$class_GROcap_seq = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap_seq, P$LAD_K562_seq, -2)
+
+length(which(P$class_GROcap=='escaper'&P$class_GROcap_seq=='escaper'))
+
+
+class_names = paste0(levels(P$class_GROcap), '; n=',table(P$class_GROcap))
+names(class_names) = levels(P$class_GROcap)
+P$class_GROcap_n = P$class_GROcap
+levels(P$class_GROcap_n) = class_names
+COL_class_GROcap_n = COL_class[names(class_names)]
+names(COL_class_GROcap_n) = class_names
+
+
+
+```
+
+## classify with 3 dimensions
+
+```{r}
+classify_3d <- function(sure, exp_y, exp_z, lrs_y, lad, exp_cut_y, exp_cut_z){
+    INACT<- sure< -0.3 & lad & exp_y < exp_cut_y  & exp_z < exp_cut_z #inactive
+    NREP<- sure> 0 & lrs_y > -0.5 & lad & exp_y > exp_cut_y  & exp_z > exp_cut_z #not repressed
+    REP<- sure> 0.3 & lrs_y < -0.75  & lad  & exp_y < exp_cut_y  & exp_z < exp_cut_z #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+
+P$class_K562_3D = classify_3d(P$SuRE_K562,
+                              P$CAGE_K562, P$DNAse_K562,
+                              P$LRS_K562, P$LAD_K562, 1.25, 0.75)
+
+P$class_HT1080_3D = classify_3d(P$SuRE_HT1080,
+                                P$CAGE_HT1080, P$DNAse_HT1080,
+                                P$LRS_HT1080, P$LAD_HT1080, 1.25, 1.75)
+
+P$class_HepG2_3D = classify_3d(P$SuRE_HepG2,
+                                P$CAGE_HepG2, P$DNAse_HepG2,
+                                P$LRS_HepG2, P$LAD_HepG2, 2.5, 1.75)
+
+p_class = P[P$class_HepG2_3D%in%c('escaper', 'repressed', 'inactive'), ]
+class_gr = gene_gr[gene_gr$name %in% p_class$name]
+
+
+```
+
+
+```{r}
+p_classes = P[which(P$class_HT1080_3D %in% c('inactive', 'escaper', 'repressed')),]
+ggplot(P, aes(x=SuRE_HT1080, y=CAGE_HT1080)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_HT1080_3D), size=0.6) +
+    labs(y='log10(CAGE)', x='log10(SuRE)') +
+    theme_bw() +
+    ggtitle('CAGE vs SuRE HT1080') +
+    geom_line(data=RM_HT1080, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
+    theme(legend.title=element_blank()) +
+    scale_colour_manual(values=COL_class)
+```
+
+```r
+library(rtracklayer)
+library(BSgenome.Hsapiens.UCSC.hg19)
+
+laminA_r1 = '~/mydata/data/GSM990672/HT1080_laminA_rep1_GSM990674-27686.txt'
+laminA_rep1 = read.table(laminA_r1, stringsAsFactors=F, skip=2, header=T,
+                         row.names=1)
+
+laminA_r2 = '~/mydata/data/GSM990672/HT1080_laminA_rep2_GSM990675-27689.txt'
+laminA_rep2 = read.table(laminA_r2, stringsAsFactors=F, skip=2, header=T,
+                         row.names=1)
+
+laminB_r1 = '~/mydata/data/GSM990672/HT1080_laminB1_rep1_GSM990672-27680.txt'
+laminB_rep1 = read.table(laminB_r1, stringsAsFactors=F, skip=2, header=T,
+                         row.names=1)
+
+laminB_r2 = '~/mydata/data/GSM990672/HT1080_laminB1_rep2_GSM990673-27683.txt'
+laminB_rep2 = read.table(laminB_r2, stringsAsFactors=F, skip=2, header=T,
+                         row.names=1)
+
+laminA_vec = rowMeans(cbind(laminA_rep1, laminA_rep2))
+laminB_vec = rowMeans(cbind(laminB_rep1, laminB_rep2))
+
+
+probe_gr = import.bed('~/mydata/data/tracks/hg19/NimbleArray_hg19_GPL10559-18779.bed')
+seqlengths(probe_gr) = seqlengths(BSgenome.Hsapiens.UCSC.hg19)[seqlevels(probe_gr)]
+probe_gr = probe_gr[seqlevels(probe_gr)!='chrY']
+o = findOverlaps(probe_gr)
+probe_gr = probe_gr[-to(o)[to(o)!=from(o)]]
+
+
+laminA_gr = probe_gr
+score(laminA_gr) = laminA_vec[laminA_gr$name]
+laminB_gr = probe_gr
+score(laminB_gr) = laminB_vec[laminB_gr$name]
+
+export.bw(laminA_gr, '~/mydata/data/tracks/hg19/HT1080_laminA_hg19_GSE22428.bw')
+export.bw(laminB_gr, '~/mydata/data/tracks/hg19/HT1080_laminB_hg19_GSE22428.bw')
+```
+
+```bash
+lamin_a=~/mydata/data/tracks/hg19/HT1080_laminA_hg19_GSE22428.bw
+lamin_b=~/mydata/data/tracks/hg19/HT1080_laminB_hg19_GSE22428.bw
+
+
+
+bigWigToBedGraph $lamin_a /dev/stdout | \
+    bedtools intersect -a <(awk -vOFS='\t' '{print $1, $2 - 22000,
+                                                   $3 + 22000, $4, $5, $6}' \
+                            raw_data/tss.bed) -b - -wa -wb | \
+    awk -vOFS='\t' '{print $2 - $8, $2 - $9, $4, $10}' | \
+    gzip -c > raw_data/HT1080_laminA_tss.txt.gz
+
+bigWigToBedGraph $lamin_b /dev/stdout | \
+    bedtools intersect -a <(awk -vOFS='\t' '{print $1, $2 - 22000,
+                                                   $3 + 22000, $4, $5, $6}' \
+                            raw_data/tss.bed) -b - -wa -wb | \
+    awk -vOFS='\t' '{print $2 - $8, $2 - $9, $4, $10}' | \
+    gzip -c > raw_data/HT1080_laminB_tss.txt.gz
+
+```
+
+
+```{r}
+
+laminA_data = read.table('../raw_data/HT1080_laminA_tss.txt.gz', sep='\t',
+                         stringsAsFactors=F,
+                         col.names=c('start','end','name','score'))
+
+laminB_data = read.table('../raw_data/HT1080_laminB_tss.txt.gz', sep='\t',
+                         stringsAsFactors=F,
+                         col.names=c('start','end','name','score'))
+
+group_mean <- function(data, P, class_name){
+    data = data.frame(class=P[data$name,class_name], data)
+    mean_data = ddply(data, .(class), function(x){
+        score_matrix = apply(x, 1, function(y){
+                c(pos=mean(as.numeric(y[2:3])),
+                  score=as.vector(y[5]))
+            })
+        score_data = data.frame(pos = as.numeric(score_matrix[1,]) + 22000,
+                                score = as.numeric(score_matrix[2,]))
+
+        score_data = score_data[order(score_data$pos), ]
+        wsize<-floor(nrow(score_data)/20)
+        if(!wsize %% 2) {wsize<-wsize+1}
+        runmean = runmean(Rle(score_data$score), k=wsize,
+                          endrule='constant')
+        score_data$run_mean = as.numeric(runmean)
+        score_data$class = x$class[1]
+        return(score_data[match(unique(score_data$pos), score_data$pos), ])
+    })
+    return(mean_data)
+}
+
+p_matched = matchSet(P[P$class%in%c('iLAD', 'escaper'), ], 'class_HT1080_3D',
+                     'escaper', 'CAGE_HT1080')
+                     p_class = P[P$class_GROcap%in%c('escaper', 'repressed', 'inactive'),]
+
+p_subset = rbind.data.frame(p_class, p_matched[p_matched$class_GROcap=='iLAD', ])
+mean_laminA = group_mean(laminA_data, p_subset, 'class_HT1080_3D')
+mean_laminB = group_mean(laminB_data, p_subset, 'class_HT1080_3D')
+
+
+ggplot(mean_laminA, aes(x=pos, y=run_mean, color=class)) +
+    geom_line() +
+    ggtitle('Lamin A/C profile around transcription start site') +
+    scale_color_manual(values=COL_class)
+
+ggplot(melt(mean_laminB, id.vars='pos'),
+       aes(x=pos, y=value, color=variable)) +
+    geom_line() +
+    ggtitle('Lamin B profile around transcription start site') +
+    scale_color_manual(values=COL_class)
+
+
+```

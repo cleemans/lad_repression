@@ -1,4 +1,4 @@
-r document van Steensel lab
+# r document van Steensel lab
 
 # Gene repression in LADs
 ## Christ Leemans, 03-11-2016 - 26-07-2017
@@ -71,7 +71,7 @@ names(COL)<-c("repressed", "escaper", "inactive")
 
 
 
-id_table = read.table('../workspace/transcript.table', stringsAsFactors=F,
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
                       row.names=1, col.names=c('transcript_id', 'gene_id',
                                                'symbol'))
 load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
@@ -671,7 +671,7 @@ get_run_log2 <- function(class, class_col, P, oENST, oPOS, lmnb1_vec, dam_vec){
    if(!wsize %% 2) {wsize<-wsize+1} #must be odd
    #plot:
    run_log2 = log2(runsum(Rle(subLMNB1), k=wsize, endrule='constant')/
-                   runsum(Rle(subDam), k=wsize, endrule='constant'))
+                   runsum(Rle(subDam), k=wsize, endrule='constanraw_datat'))
    return(data.frame(log2=as.numeric(run_log2), pos=subPOS, class=class))
 }
 
@@ -922,7 +922,7 @@ bwtool summary -header \
 
 
 bwtool summary -header \
-               -fill=0 \
+#               -fill=0 \
                -with-sum \
                -skip-median \
                -keep-bed \
@@ -942,7 +942,7 @@ bwtool summary -header \
 
 
 bwtool summary -header \
-               -fill=0 \
+#               -fill=0 \
                -with-sum \
                -skip-median \
                -keep-bed \
