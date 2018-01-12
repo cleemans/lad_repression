@@ -8,7 +8,7 @@ Generally speaking, genes inside lamina associated domains are not or very lowly
 
 ## Description of Data.
 
-gencode.sure.160617.rda: 
+gencode.sure.160617.rda:
     file from Joris, received 17 June 2016. Promoter positions in this file are from Gencode. Contains SuRE, gro-cap and cage expression data as well as the number of tissues in which each promoter is expressed.
 
 
@@ -93,7 +93,7 @@ for (col in c('SuRE', 'CAGE', 'GROcap')){
 create_RM <-function(data, x, y, lad){
     #then calculate running mean for iLAD promoters:
     #sort by SuRE and then random for ties
-    o = order(data[,x],sample(c(1:nrow(data)))) 
+    o = order(data[,x],sample(c(1:nrow(data))))
 
     x_sorted = data[o,x]
     y_sorted = data[o,y]
@@ -111,7 +111,7 @@ create_RM <-function(data, x, y, lad){
                      y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
        RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
        RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
-      } 
+      }
     #add first datapoint (SuRE equals pseudocount)
     RM1<-RM[0,] #empty df
     RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
@@ -172,9 +172,9 @@ names(COL_lad_n) = lad_names
 
 p_classes = P[which(P$class %in% c('inactive', 'escaper', 'repressed')),]
 
-ggplot(P, aes(x=SuRE, y=GROcap)) + 
-    geom_point(size=0.1,color=COLi) + 
-    geom_point(data=p_classes, aes(color=class_n_prom), size=1) + 
+ggplot(P, aes(x=SuRE, y=GROcap)) +
+    geom_point(size=0.1,color=COLi) +
+    geom_point(data=p_classes, aes(color=class_n_prom), size=1) +
     geom_line(data=RM, aes(x=x.mean, y=y.ilad), color=COL_lad['iLAD']) +
     geom_line(data=RM[RM$x.mean>0,], aes(x=x.mean, y=y.ilad - 0.5), linetype='dotdash', size=0.3) +
     geom_line(data=RM[RM$x.mean>0,], aes(x=x.mean, y=y.ilad - 1), linetype='dotdash', size=0.3) +
@@ -184,7 +184,7 @@ ggplot(P, aes(x=SuRE, y=GROcap)) +
     guides(fill=FALSE) +
     theme(legend.title=element_blank()) +
     labs(y='log10(GROcap)', x='log10(SuRE)') +
-    scale_colour_manual(values=COL_class_n_prom) 
+    scale_colour_manual(values=COL_class_n_prom)
 
 ```
 
@@ -211,7 +211,7 @@ p_most_down = ddply(P[!is.na(P$ensembl_gene_id),], .(ensembl_gene_id), function(
         print('huh???')
         print(x)
         result = x[1,]
-    } 
+    }
     return(result)
   })
 
@@ -241,6 +241,8 @@ nice -19 bwtool matrix -fill=0 -tiled-averages=100 \
                        ../../data/tracks/hg38/MYC_K562_FCoC_ENCFF677COF.bigWig /dev/stdout | \
                        gzip -c > raw_data/prom_window_MYC.txt.gz &
 
+
+
 ```
 
 ```{r}
@@ -269,9 +271,9 @@ for(i in c('iLAD', 'escaper', 'repressed', 'inactive')) #for the three gene clas
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         ylim(0,5) +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
@@ -294,9 +296,9 @@ for(i in c('iLAD', 'escaper')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         ylim(0,5) +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
@@ -317,9 +319,9 @@ for(i in c('iLAD', 'escaper', 'repressed', 'inactive')) #for the three gene clas
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         ylim(0,15) +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
@@ -342,9 +344,9 @@ for(i in c('iLAD', 'escaper')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         ylim(0,15) +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
@@ -365,10 +367,10 @@ for(i in c('iLAD', 'escaper', 'repressed', 'inactive')) #for the three gene clas
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,3) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))
@@ -390,10 +392,10 @@ for(i in c('iLAD', 'escaper')) #for the three gene classes
     mean = do.call(rbind.data.frame, mean_list)
     colnames(mean) = c('x', 'y')
     #plot:
-    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) + 
+    plot_list[[i]] = ggplot(mean, aes(x=x-F_window, y=y)) + geom_line(col=COL_class[i]) +
                         ylim(0,3) +
                         ggtitle(paste(i, '; n=', length(s))) +
-                        geom_vline(xintercept=0, lty='dotted') + 
+                        geom_vline(xintercept=0, lty='dotted') +
                         theme_bw() +
                         theme(axis.title=element_blank()) +
                         scale_x_continuous(breaks=seq(-F_window, F_window, F_window))

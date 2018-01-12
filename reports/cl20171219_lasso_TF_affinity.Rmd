@@ -1,0 +1,1170 @@
+# knitr document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 26-07-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly
+expressed. These genes can either be actively repressed by their DNA context
+(e.g. heterochromatin, lamina association), or simply be inactive
+(because essential factors for expression are missing?). Yet another group of
+genes seem to evade gene repression in the context of lamina associated domains.
+In this report I would like to take another look at transcription factors which
+are able to separate these groups. This time I will use lasso regression.
+
+
+## library and data loading
+```{r, fig.width=10, fig.height=10, echo=FALSE, fig.width=10, fig.height=10}
+
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+library(glmnet)
+library(doMC)
+registerDoMC(cores=10)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+P$CAGE_K562 = K562_CAGE[p_complete%in%rownames(P)]
+P$CAGE_HT1080 = HT1080_CAGE[p_complete%in%rownames(P),7]
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562', 'CAGE_K562',
+              'CAGE_HT1080')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+p_matched = matchSet(P[P$class_GROcap%in%c('iLAD', 'escaper'), ], 'class_GROcap',
+                     'escaper', 'GROcap_K562')
+p_class = P[P$class_GROcap%in%c('escaper', 'repressed', 'inactive'),]
+
+p_subset = rbind.data.frame(p_class, p_matched[p_matched$class_GROcap=='iLAD', ])
+
+tss_subset = tss_gr[p_subset$name]
+tss_subset$name = p_subset$class_GROcap
+export.bed(tss_subset, '../raw_data/lad_class_subset_tss.bed')
+```
+
+
+```{r, fig.width=10, fig.height=10, echo=FALSE}
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+
+
+```
+AffinityProfile -sequence=raw_data/tssr_300_50.fa \
+                -strand=2 \
+                -psam_list=raw_data/TF_databases/Diaferia_et_al_2016/PSAM/psam.list \
+                -output=raw_data/Diaferia_affinity_300_50
+
+```
+
+
+```{r figure4c, fig.width=10, fig.height=10, echo=FALSE}
+
+
+rnaseq_rep1 = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/K562_rna_rep2_ENCFF222NCB.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+colnames(rnaseq_rep1)[1] = colnames(rnaseq_rep2)[1] = 'transcript_id'
+```
+
+
+```
+grep 'nsites' raw_data/TF_databases/Diaferia_et_al_2016/PSAM/* | \
+    perl -pe 's|raw_data\/.*/(.*).xml:.*<nsites>(.*)<\/nsites>|\1\t\2|' \
+    > raw_data/TF_databases/Diaferia_et_al_2016/nsites.txt
+
+grep 'pmax' raw_data/Diaferia_affinity_300_50/AffinityProfile.log | \
+    perl -pe 's|.*/PSAM/(.*).xml.*pmax=(.*)|\1\t\2|' \
+    > raw_data/Diaferia_affinity_300_50/pmax.txt
+
+```
+
+
+```{r}
+
+load('../vf20171221_lad_class_subset_tss_profile_summaries.rda')
+
+data_summary = data.frame()
+for (class in names(profile_summaries)){
+    df = data.frame(exp(t(profile_summaries[[class]])),
+                    class, pos=-2500:2499)
+    data_summary = rbind(data_summary,
+                         df)
+}
+
+
+pdf('cl20171222_profile_summaries_glm_vince.pdf', width=20, height = 10)
+ggplot(data_summary, aes(x=pos, y=Mean, color=class)) +
+    geom_ribbon(aes(fill=class,ymin=X1st.Qu., ymax=X3rd.Qu.), alpha=0.4) +
+    ggtitle('Mean + 1st and 3rd quartile') +
+    geom_line() +
+    scale_x_continuous(breaks = seq(-2500, 2500, 200)) +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    facet_wrap(~class)
+ggplot(data_summary, aes(x=pos, y=Mean, color=class)) +
+    ggtitle('Mean') +
+    geom_line() +
+    scale_x_continuous(breaks = seq(-2500, 2500, 200)) +
+    scale_color_manual(values=COL_class)
+ggplot(data_summary, aes(x=pos, y=Median, color=class)) +
+    ggtitle('Median') +
+    geom_line() +
+    scale_x_continuous(breaks = seq(-2500, 2500, 200)) +
+    scale_color_manual(values=COL_class)
+dev.off()
+
+
+load('../vf20171221_lad_class_subset_tss_profiles.rda')
+
+promoters <- import("../raw_data/cl20171219_lad_class_subset_tss.bed")
+promoters$ord <- 1:length(promoters)
+
+
+p_repressed = P[P$class_GROcap=='repressed', ]
+q = quantile(P[P$class_GROcap=='escaper', 'SuRE_K562'])
+
+repressed1 = p_repressed[p_repressed$SuRE_K562 < q[2], ]
+
+repressed2 = p_repressed[p_repressed$SuRE_K562 < q[3] &
+                         p_repressed$SuRE_K562 > q[2] , ]
+
+repressed3 = p_repressed[p_repressed$SuRE_K562 < q[4] &
+                         p_repressed$SuRE_K562 > q[3] , ]
+repressed4 = p_repressed[p_repressed$SuRE_K562 > q[4], ]
+
+
+sub_repressed = c(sample(rownames(repressed1), 50),
+                  sample(rownames(repressed2), 50),
+                  sample(rownames(repressed3), 50),
+                  rownames(repressed4))
+
+repressed = promoters[promoters$name=='repressed']
+index_vec = c(repressed$ord[p_repressed$name%in%sub_repressed])
+
+sub_repressed_summary = exp(colSums(profiles[index_vec, ]))
+
+sub_escaper_summary = exp(colSums(profiles[promoters$name=='escaper', ]))
+
+
+df = rbind(data.frame(Mean=sub_repressed_summary, class='repressed',
+                      pos=-2500:2499),
+           data.frame(Mean=sub_escaper_summary,
+                      class='escaper', pos=-2500:2499))
+
+
+
+pdf('cl20171222_profile_summaries_glm_vince_repressed.pdf', width=20, height = 10)
+ggplot(df, aes(x=pos, y=Mean, color=class)) +
+      ggtitle('Mean') +
+      geom_line() +
+      ylim(0,3) +
+      scale_x_continuous(breaks = seq(-2500, 2500, 200)) +
+      scale_color_manual(values=COL_class)
+dev.off()
+
+```
+
+
+
+
+```{r}
+
+aff_table_diaferia = read.table('../raw_data/Diaferia_affinity_300_50/seq_psam.dat',
+                                stringsAsFactors=F)
+
+colnames(aff_table_diaferia) = gsub('.xml','', colnames(aff_table_diaferia))
+
+tf_table = read.table('../raw_data/TF_databases/Diaferia_et_al_2016/motif_metadata.csv',
+                      sep=',', header=T, stringsAsFactors=F, row.names=1)
+
+hgnc_table = read.table('~/mydata/data/tracks/hg19/gencode.v19.metadata.HGNC.gz',
+                        stringsAsFactors=F)
+
+enst_vec = hgnc_table[match(tf_table$Cognate.TF, hgnc_table[,2]), 1]
+
+
+hgnc_vec = lapply(strsplit(rnaseq_rep1$transcript, ','),
+                  function(x){
+                      hgnc_table[match(x[1], hgnc_table[,1]),2]
+                  })
+rnaseq_rep1$hgnc = rnaseq_rep2$hgnc = unlist(hgnc_vec)
+
+tf_rna = match(tf_table$Cognate.TF, unlist(hgnc_vec))
+
+tf_table$exp = rowMeans(cbind(rnaseq_rep1[tf_rna, 'TPM'],
+                              rnaseq_rep2[tf_rna, 'TPM']))
+
+
+ggplot(tf_table, aes(x=log10(exp))) +
+    geom_density()
+
+print('TFs expressed:')
+table(log10(tf_table$exp) > 0)
+expressed_tf = rownames(tf_table)[which(log10(tf_table$exp) > 0)]
+expressed_tf = expressed_tf[expressed_tf%in% colnames(aff_table_diaferia)]
+
+
+
+## nsites is found in the meme file containing all motifs.
+## it's the number of sequences used to build the motif.
+nsites = read.table('../raw_data/TF_databases/Diaferia_et_al_2016/nsites.txt',
+                    row.names=1, stringsAsFactors=F)
+
+
+
+## only consider motifs build on more than 100 sequences
+exp_nsites_tf = expressed_tf[nsites[expressed_tf,] >= 100]
+
+print('# of motifs based on > 100 sequences:')
+print(length(exp_nsites_tf))
+
+pmax = read.table('../raw_data/Diaferia_affinity_300_50/pmax.txt',
+                  row.names=1, stringsAsFactors=F)
+
+
+df = data.frame(exp_nsites_tf, pmax[exp_nsites_tf, ] ,
+                TF=tf_table[exp_nsites_tf, 'Cognate.TF'],
+                stringsAsFactors=F)
+pick = ddply(df, .(TF), function(x){
+                  if (nrow(x) > 1){
+                      return(x[which.max(x[,2]),1])
+                  } else {
+                      return(x[1,1])
+                  }
+              })$V1
+evsr = P[P$class_GROcap %in% c('repressed', 'escaper'), ]
+
+pseudo = min(aff_table_diaferia[aff_table_diaferia > 0])
+x = aff_table_diaferia[rownames(evsr), pick]
+
+y = evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO motif affinity, complete set of repressed and escapers')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+print('lambda within 1 se from minimum lambda for smallest set:')
+
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+x = aff_table_diaferia[rownames(matched_evsr), pick]
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO motif affinity, escapers and old matching set repressed')
+print('minimum of lambda:')
+
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+
+matched_evsr = rbind(P[P$name%in%sub_repressed, ],
+                     P[P$class_GROcap=='escaper', ])
+x = aff_table_diaferia[rownames(matched_evsr), pick]
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO motif affinity, escapers and new matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+
+matched_evsilad = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
+                           'class_GROcap', 'escaper', 'SuRE_K562')
+x = aff_table_diaferia[rownames(matched_evsilad), pick]
+
+y = matched_evsilad$class_GROcap == 'escaper'
+
+cvfit_evsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.min')
+
+print('LASSO motif affinity, escapers and matching set iLAD')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsilad[coef_evsilad[,1]!=0, ]))
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsilad[coef_evsilad[,1]!=0, ]))
+
+matched_rvsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD'), ],
+                           'class_GROcap', 'repressed', 'SuRE_K562')
+x = aff_table_diaferia[rownames(matched_rvsilad), pick]
+
+y = matched_rvsilad$class_GROcap == 'repressed'
+
+cvfit_rvsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.min')
+
+print('LASSO motif affinity, repressed and matching set iLADs')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+```
+
+
+
+
+
+
+
+```{r}
+
+evsr = P[P$class_GROcap %in% c('repressed', 'escaper'), ]
+
+x = apply(aff_table_diaferia[rownames(evsr), pick], 2, rank)
+
+y = evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO motif affinity RANK, escapers and repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+x = apply(aff_table_diaferia[rownames(matched_evsr), pick], 2, rank)
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+
+print('LASSO motif affinity RANK, escapers and old matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+
+matched_evsr = rbind(P[P$name%in%sub_repressed, ],
+                     P[P$class_GROcap=='escaper', ])
+x = apply(aff_table_diaferia[rownames(matched_evsr), pick], 2, rank)
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO motif affinity RANK, escapers and new matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+matched_evsilad = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
+                           'class_GROcap', 'escaper', 'SuRE_K562')
+x = apply(aff_table_diaferia[rownames(matched_evsilad), pick], 2, rank)
+
+y = matched_evsilad$class_GROcap == 'escaper'
+
+cvfit_evsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.min')
+print('LASSO motif affinity RANK, escapers and matching set iLAD')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsilad[coef_evsilad[,1]!=0, ]))
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsilad[coef_evsilad[,1]!=0, ]))
+
+
+matched_rvsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD'), ],
+                           'class_GROcap', 'repressed', 'SuRE_K562')
+x = apply(aff_table_diaferia[rownames(matched_rvsilad), pick], 2, rank)
+
+y = matched_rvsilad$class_GROcap == 'repressed'
+
+cvfit_rvsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.min')
+
+print('LASSO motif affinity RANK, repressed and matching set iLADs')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+
+```
+
+
+
+
+
+```{r}
+matched_ervsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD', 'escaper'), ],
+                            'LAD_K562', 1, 'SuRE_K562')
+
+x = aff_table_diaferia[rownames(matched_ervsilad), pick]
+y = cbind(matched_ervsilad$class_GROcap=='repressed',
+          matched_ervsilad$class_GROcap=='escaper',
+          matched_ervsilad$class_GROcap=='iLAD')
+cvfit_revsilad = cv.glmnet(as.matrix(x), y, family="multinomial",
+                           type.multinomial = "grouped", parallel=T)
+
+c = coef(cvfit_revsilad, s='lambda.min')
+
+print('LASSO motif affinity, repressed, escaper and matching set iLADs')
+print('minimum of lambda:')
+coef_revsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_revsilad[rowSums(coef_revsilad)!=0, ]))
+
+
+c = coef(cvfit_revsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+coef_revsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_revsilad[rowSums(coef_revsilad)!=0, ]))
+
+
+matched_ervsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD', 'escaper'), ],
+                            'LAD_K562', 1, 'SuRE_K562')
+
+x = apply(aff_table_diaferia[rownames(matched_ervsilad), pick], 2, rank)
+y = cbind(matched_ervsilad$class_GROcap=='repressed',
+          matched_ervsilad$class_GROcap=='escaper',
+          matched_ervsilad$class_GROcap=='iLAD')
+cvfit_revsilad = cv.glmnet(as.matrix(x), y, family="multinomial",
+                           type.multinomial = "grouped", parallel=T)
+
+c = coef(cvfit_revsilad, s='lambda.min')
+
+print('LASSO motif affinity RANK, repressed, escaper and matching set iLADs')
+print('minimum of lambda:')
+coef_revsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_revsilad[rowSums(coef_revsilad)!=0, ]))
+
+
+c = coef(cvfit_revsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+coef_revsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_revsilad[rowSums(coef_revsilad)!=0, ]))
+
+
+
+matched_ladvsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD', 'inactive', 'escaper'), ],
+                               'LAD_K562', 1, 'SuRE_K562')
+
+x = aff_table_diaferia[rownames(matched_ladvsilad), pick]
+y = cbind(matched_ladvsilad$class_GROcap=='inactive',
+          matched_ladvsilad$class_GROcap=='repressed',
+          matched_ladvsilad$class_GROcap=='escaper',
+          matched_ladvsilad$class_GROcap=='iLAD')
+cvfit_ladvsilad = cv.glmnet(as.matrix(x), y, family="multinomial",
+                            type.multinomial = "grouped", parallel=T)
+
+c = coef(cvfit_ladvsilad, s='lambda.min')
+print('LASSO motif affinity RANK, LAD classes and matching set iLADs')
+print('minimum of lambda:')
+coef_ladvsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_ladvsilad[rowSums(coef_ladvsilad)!=0, ])
+
+
+c = coef(cvfit_ladvsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+coef_ladvsilad = cbind(c[1][[1]], c[2][[1]], c[3][[1]])
+kable(data.frame(coefficient = coef_ladvsilad[rowSums(coef_ladvsilad)!=0, ])
+
+```
+
+
+
+
+
+
+
+```{r}
+evsr = P[P$class_GROcap %in% c('repressed', 'escaper'), ]
+
+pseudo = min(aff_table_diaferia[aff_table_diaferia > 0])
+x = log10(aff_table_diaferia[rownames(evsr), pick] + 10^-40)
+
+y = evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+coef_evsr = coef(cvfit, s='lambda.min')
+print('LASSO log10 motif affinity, complete set of repressed and escapers')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+x = log10(aff_table_diaferia[rownames(matched_evsr), pick] + 10^-40)
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO log10 motif affinity, escapers and old matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+
+matched_evsr = rbind(P[P$name%in%sub_repressed, ],
+                     P[P$class_GROcap=='escaper', ])
+x = log10(aff_table_diaferia[rownames(matched_evsr), pick] + 10^-40)
+
+y = matched_evsr$class_GROcap == 'escaper'
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO log10 motif affinity, escapers and new matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+
+
+matched_evsilad = matchSet(P[P$class_GROcap%in%c('escaper', 'iLAD'), ],
+                           'class_GROcap', 'escaper', 'SuRE_K562')
+x = log10(aff_table_diaferia[rownames(matched_evsilad), pick] + 10^-40)
+
+y = matched_evsilad$class_GROcap == 'escaper'
+
+cvfit_evsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.min')
+
+print('LASSO log10 motif affinity, escapers and matching set iLAD')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsilad[coef_evsilad[,1]!=0, ]))
+
+coef_evsilad = coef(cvfit_evsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+
+
+matched_rvsilad = matchSet(P[P$class_GROcap%in%c('repressed', 'iLAD'), ],
+                           'class_GROcap', 'repressed', 'SuRE_K562')
+x = log10(aff_table_diaferia[rownames(matched_rvsilad), pick] + 10^-40)
+
+y = matched_rvsilad$class_GROcap == 'repressed'
+
+cvfit_rvsilad = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.min')
+
+print('LASSO log10 motif affinity, repressed and matching set iLAD')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+
+coef_rvsilad = coef(cvfit_rvsilad, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_rvsilad[coef_rvsilad[,1]!=0, ]))
+```
+
+```{r}
+load('../results/fc171227_pwms.RData')
+
+
+pick_name = tf_table[pick, 'Cognate.TF']
+
+x = rbind(pwm.esc, pwm.repr)[,pick_name]
+
+y = c(rep(1, nrow(pwm.esc)), rep(0, nrow(pwm.repr)))
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+coef_evsr = coef(cvfit, s='lambda.min')
+
+
+print('LASSO -log10(p) FIMO, complete set of repressed and escapers')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+
+p_repressed = P[P$class_GROcap=='repressed', ]
+q = quantile(P[P$class_GROcap=='escaper', 'SuRE_K562'])
+
+repressed1 = p_repressed[p_repressed$SuRE_K562 < q[2], ]
+
+repressed2 = p_repressed[p_repressed$SuRE_K562 < q[3] &
+                         p_repressed$SuRE_K562 > q[2] , ]
+
+repressed3 = p_repressed[p_repressed$SuRE_K562 < q[4] &
+                         p_repressed$SuRE_K562 > q[3] , ]
+repressed4 = p_repressed[p_repressed$SuRE_K562 > q[4], ]
+
+
+sub_repressed = c(sample(rownames(repressed1), 50),
+                  sample(rownames(repressed2), 50),
+                  sample(rownames(repressed3), 50),
+                  rownames(repressed4))
+
+repressed = promoters[promoters$name=='repressed']
+index_vec = c(repressed$ord[p_repressed$name%in%sub_repressed])
+pwm.repr.sub = pwm.repr[index_vec, ]
+
+
+x = rbind(pwm.esc, pwm.repr.sub)[,pick_name]
+
+y = c(rep(1, nrow(pwm.esc)), rep(0, nrow(pwm.repr.sub)))
+
+cvfit = cv.glmnet(as.matrix(x), y, family='binomial', parallel=T)
+plot(cvfit)
+
+coef_evsr = coef(cvfit, s='lambda.min')
+
+print('LASSO -log10(p) FIMO, escapers and new matching set repressed')
+print('minimum of lambda:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+coef_evsr = coef(cvfit, s='lambda.1se')
+
+print('lambda within 1 se from minimum lambda for smallest set:')
+kable(data.frame(coefficient = coef_evsr[coef_evsr[,1]!=0, ]))
+
+```
+
+```{r}
+repr_region = repressed
+start(repr_region) = start(repr_region) - 2000
+end(repr_region) = end(repr_region) + 2000
+export.bed(repr_region, '../raw_data/repressed_prom_tss_2kb.bed')
+
+repr_region = repressed[p_repressed$name%in%sub_repressed]
+start(repr_region) = start(repr_region) - 2000
+end(repr_region) = end(repr_region) + 2000
+export.bed(repr_region, '../raw_data/repressed_prom_tss_matched_2kb.bed')
+
+
+esc_region = promoters[promoters$name=='escaper']
+start(esc_region) = start(esc_region) - 2000
+end(esc_region) = end(esc_region) + 2000
+export.bed(esc_region, '../raw_data/escaper_prom_tss_2kb.bed')
+
+
+
+
+repr_region = repressed
+start(repr_region) = ifelse(strand(repr_region)=='+',
+                            start(repr_region) - 300,
+                            start(repr_region) - 50)
+end(repr_region) = ifelse(strand(repr_region)=='+',
+                          end(repr_region) + 50,
+                          end(repr_region) + 300)
+export.bed(repr_region, '../raw_data/repressed_prom_tss_300_50.bed')
+
+repr_region = repressed[p_repressed$name%in%sub_repressed]
+start(repr_region) = ifelse(strand(repr_region)=='+',
+                            start(repr_region) - 300,
+                            start(repr_region) - 50)
+end(repr_region) = ifelse(strand(repr_region)=='+',
+                          end(repr_region) + 50,
+                          end(repr_region) + 300)
+export.bed(repr_region, '../raw_data/repressed_prom_tss_matched_300_50.bed')
+
+
+esc_region = promoters[promoters$name=='escaper']
+start(esc_region) = ifelse(strand(esc_region)=='+',
+                            start(esc_region) - 300,
+                            start(esc_region) - 50)
+end(esc_region) = ifelse(strand(esc_region)=='+',
+                          end(esc_region) + 50,
+                          end(esc_region) + 300)
+export.bed(esc_region, '../raw_data/escaper_prom_tss_300_50.bed')
+
+```
+
+
+
+```
+bedtools getfasta -name \
+                  -bed raw_data/repressed_prom_tss_2kb.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/repressed_prom_tss_2kb.fa
+
+bedtools getfasta -name \
+                  -bed raw_data/repressed_prom_tss_matched_2kb.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/repressed_prom_tss_matched_2kb.fa
+
+bedtools getfasta -name \
+                  -bed raw_data/escaper_prom_tss_2kb.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/escaper_prom_tss_2kb.fa
+
+
+bedtools getfasta -name \
+                  -bed raw_data/repressed_prom_tss_300_50.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/repressed_prom_tss_300_50.fa
+
+bedtools getfasta -name \
+                  -bed raw_data/repressed_prom_tss_matched_300_50.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/repressed_prom_tss_matched_300_50.fa
+
+bedtools getfasta -name \
+                  -bed raw_data/escaper_prom_tss_300_50.bed\
+                  -fi ~/mydata/data/hg19/genome.fa \
+                  -fo raw_data/escaper_prom_tss_300_50.fa
+
+
+
+dreme-py3 -p raw_data/escaper_prom_tss_2kb.fa \
+          -n raw_data/repressed_prom_tss_2kb.fa \
+          -o results/dreme_all
+
+dreme-py3 -p raw_data/escaper_prom_tss_2kb.fa \
+          -n raw_data/repressed_prom_tss_matched_2kb.fa \
+          -o results/dreme_matched
+
+centrimo centrimo_esc raw_data/escaper_prom_tss_2kb.fa \
+         raw_data/TF_databases/Diaferia_et_al_2016/TableEV15
+
+
+centrimo -o centrimo_repr raw_data/repressed_prom_tss_2kb.fa \
+         raw_data/TF_databases/Diaferia_et_al_2016/TableEV15
+
+centrimo -o centrimo_repr_matched raw_data/repressed_prom_tss_matched_2kb.fa \
+         raw_data/TF_databases/Diaferia_et_al_2016/TableEV15
+
+
+fimo --thresh 0.05 -o fimo_esc_0.05 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/escaper_prom_tss_300_50.fa
+
+fimo --thresh 0.05 -o fimo_repr_matched_0.05 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/repressed_prom_tss_matched_300_50.fa
+
+grep 'GABPA_004' fimo_esc_0.05/fimo.txt > fimo_esc_0.05/gabpa.txt
+grep 'ETS2_002' fimo_esc_0.05/fimo.txt > fimo_esc_0.05/ets2.txt
+
+grep 'GABPA_004' fimo_repr_matched_0.05/fimo.txt > fimo_repr_matched_0.05/gabpa.txt
+grep 'ETS2_002' fimo_repr_matched_0.05/fimo.txt > fimo_repr_matched_0.05/ets2.txt
+
+fimo -o fimo_esc_1e-4 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/escaper_prom_tss_300_50.fa
+
+fimo -o fimo_repr_matched_1e-4 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/repressed_prom_tss_matched_300_50.fa
+
+grep 'GABPA_004' fimo_esc_1e-4/fimo.txt > fimo_esc_1e-4/gabpa.txt
+grep 'ETS2_002' fimo_esc_1e-4/fimo.txt > fimo_esc_1e-4/ets2.txt
+
+grep 'GABPA_004' fimo_repr_matched_1e-4/fimo.txt > fimo_repr_matched_1e-4/gabpa.txt
+grep 'ETS2_002' fimo_repr_matched_1e-4/fimo.txt > fimo_repr_matched_1e-4/ets2.txt
+
+
+
+
+
+fimo --thresh 0.001 -o fimo_esc_1e-3 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/escaper_prom_tss_300_50.fa
+
+fimo --thresh 0.001 -o fimo_repr_matched_1e-3 --no-qvalue \
+     raw_data/TF_databases/Diaferia_et_al_2016/TableEV15 \
+     raw_data/repressed_prom_tss_matched_300_50.fa
+
+grep 'GABPA_004' fimo_esc_1e-3/fimo.txt > fimo_esc_1e-3/gabpa.txt
+grep 'ETS2_002' fimo_esc_1e-3/fimo.txt > fimo_esc_1e-3/ets2.txt
+
+grep 'GABPA_004' fimo_repr_matched_1e-3/fimo.txt > fimo_repr_matched_1e-3/gabpa.txt
+grep 'ETS2_002' fimo_repr_matched_1e-3/fimo.txt > fimo_repr_matched_1e-3/ets2.txt
+
+```
+
+
+
+```python
+from Bio import SeqIO
+esc_seq_dir = {}
+for record in SeqIO.parse("raw_data/escaper_prom_tss_300_50.fa", "fasta"):
+    esc_seq_dir[record.id] = record
+
+for setting in ['0.05', '1e-4', '1e-3']:
+    for prot in ['ets2', 'gabpa']:
+        out_name = 'fimo_esc_%s/%s.seq' % (setting, prot)
+        in_name = 'fimo_esc_%s/%s.txt' % (setting, prot)
+        with open(out_name, 'w') as f_out:
+            with open(in_name) as f_in:
+                for line in f_in.readlines():
+                    line_split = line.strip().split('\t')
+                    start = int(line_split[3]) - 4
+                    end = int(line_split[4]) + 3
+                    if start >= 0 and end < 350:
+                        seq = esc_seq_dir[line_split[2]][start:end]
+                        if line_split[5] == "-":
+                            seq = seq.reverse_complement()
+                        f_out.write(str(seq.seq))
+                        f_out.write('\n')
+
+
+repr_seq_dir = {}
+for record in SeqIO.parse("raw_data/repressed_prom_tss_matched_300_50.fa", "fasta"):
+    repr_seq_dir[record.id] = record
+
+
+for setting in ['0.05', '1e-4', '1e-3']:
+    for prot in ['ets2', 'gabpa']:
+        out_name = 'fimo_repr_matched_%s/%s.seq' % (setting, prot)
+        in_name = 'fimo_repr_matched_%s/%s.txt' % (setting, prot)
+        with open(out_name, 'w') as f_out:
+            with open(in_name) as f_in:
+                for line in f_in.readlines():
+                    line_split = line.strip().split('\t')
+                    start = int(line_split[3]) - 4
+                    end = int(line_split[4]) + 3
+                    if start >= 0 and end < 350:
+                        seq = repr_seq_dir[line_split[2]][start:end]
+                        if line_split[5] == "-":
+                            seq = seq.reverse_complement()
+                        f_out.write(str(seq.seq))
+                        f_out.write('\n')
+
+
+```
+
+
+
+```{r}
+
+pdf('dinuc.pdf', width=50, height=3)
+for (setting in c('0.05', '1e-4', '1e-3')){
+    for (tf in c('ets2', 'gabpa')){
+        esc_in = paste0('../fimo_esc_', setting, '/', tf, '.seq')
+        repr_in = paste0('../fimo_repr_matched_', setting, '/', tf, '.seq')
+        esc_ets = read.table(esc_in, stringsAsFactors=F)
+        repr_ets = read.table(repr_in, stringsAsFactors=F)
+
+        esc_ets_char = do.call(rbind, strsplit(toupper(esc_ets[,1]), ""))
+        repr_ets_char = do.call(rbind, strsplit(toupper(repr_ets[,1]), ""))
+
+        B = c('A', 'C','G','T')
+        opt = unlist(lapply(B, function(x){paste0(x, B)}))
+        dinuc_list = lapply(1:16, function(i, e, r){
+                e_table = table(paste0(e[,i], e[,i+1]))
+                e_df = data.frame(row.names=opt, dinuc=opt, class='escaper', i,
+                                  count = rep(0, length(opt)), stringsAsFactors=F)
+                e_df[names(e_table), 'count'] = e_table
+                e_df$ratio = e_df$count / sum(e_df$count)
+
+                r_table = table(paste0(r[,i], r[,i+1]))
+                r_df = data.frame(row.names=opt, dinuc=opt, class='repressed', i,
+                                  count = rep(0, length(opt)), stringsAsFactors=F)
+                r_df[names(r_table), 'count'] = r_table
+                r_df$ratio = r_df$count / sum(r_df$count)
+                return(rbind(e_df, r_df))
+            }, esc_ets_char, repr_ets_char)
+
+
+        dinuc_data = do.call(rbind, dinuc_list)
+
+        print(ggplot(dinuc_data, aes(x=dinuc, y=ratio, color=class)) +
+            geom_point() +
+            ggtitle(paste(tf, setting)) +
+            scale_color_manual(values=COL_class) +
+            facet_wrap(~i, nrow=1))
+    }
+}
+dev.off()
+
+
+
+```

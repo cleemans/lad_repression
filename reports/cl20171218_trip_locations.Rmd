@@ -1,0 +1,808 @@
+# knitr document van Steensel lab
+
+# Escaper/repressed TRIP data pre-processing
+## Christ Leemans, 14-11-2017
+
+## Introduction
+In previous analysis we used SuRE and GROcap to classify promoters in lamina
+associated domains as repressed, inactive or escaper. Repressed being actively
+repressed, inactive promoters showing no activity even when removed from the lamina
+and escapers being equally active in both SuRE and GROcap.
+
+To validate that the escaping behavior is encoded in the promoter sequence,
+Marloes created TRIP pools for 4 escaper promoters and 4 repressed promoters.
+If escaping behavior is encoded in the sequence, any integration of an escaper
+promoter in LADs should be able to escape repression, while integrations of
+repressed promoters should be repressed.
+
+In this report I would like to delve further in the data, specifically Looking
+at the heterogeneity observed in LAD intergrations of repressed promoters.
+While in general repressed promoters are indeed repressed when integrated in
+LADs, there are some exceptions.
+
+
+
+```{r}
+library(ggplot2)
+library(rtracklayer)
+library(plyr)
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+
+pseudo_log2 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log2(val_vec))
+}
+
+
+file_list = list.files('../../trip/cl20171206_TRIP_K562_evsr/cDNA', pattern='normalized',
+                       full.names=T)
+names(file_list) = gsub('.*cDNA/(.*).normalized', '\\1', file_list)
+
+table_list = lapply(file_list, read.table, header=T, stringsAsFactors=F,
+                    row.names=1)
+
+info = data.frame(name=names(file_list),
+                  promoter=gsub('([0-9]+).*', '\\1', names(file_list)),
+                  bio_rep = gsub('[0-9]+([A-B]).*', '\\1', names(file_list)),
+                  tech_rep = gsub('[0-9]+[A-B]_r(.*)', '\\1', names(file_list)),
+                  stringsAsFactors=F)
+info$promoter = gsub('(.*)_.*_.*', '\\1', info$promoter)
+info$bio_rep = gsub('.*_(.*)_.*', '\\1', info$bio_rep)
+info$tech_rep = gsub('.*_.*_r(.*)', '\\1', info$tech_rep)
+```
+
+
+```{r, fig.width=10, fig.height=10}
+check_reproducability <- function(rep1, rep2, label){
+    bc_vec1 = rownames(rep1)
+    bc_vec2 = rownames(rep2)
+    bc_vec = bc_vec1[bc_vec1 %in% bc_vec2]
+    uniq_rep1 = bc_vec1[!bc_vec1 %in% bc_vec2]
+    uniq_rep2 = bc_vec2[!bc_vec2 %in% bc_vec1]
+    cat(paste0('shared: ', length(bc_vec), '\n'))
+    cat(paste0('rep1 unique: ', length(uniq_rep1), '\n'))
+    cat(paste0('rep2 unique: ', length(uniq_rep2), '\n'))
+    bc_vec = bc_vec[rep1[bc_vec, 'gDNA_count'] > 100 | rep2[bc_vec, 'gDNA_count'] > 100]
+    cat(paste0('above threshold (> 100 gDNA either rep): ', length(bc_vec), '\n'))
+    cat(paste0('rep1 unique > 100: ', length(which(rep1[uniq_rep1, 'gDNA_count'] > 100)),
+               '\n'))
+    cat(paste0('rep2 unique > 100: ', length(which(rep2[uniq_rep2, 'gDNA_count'] > 100)),
+               '\n'))
+    norm_data = data.frame(rep1 = rep1[bc_vec, 'normalized_by_gDNA'],
+                          rep2 = rep2[bc_vec, 'normalized_by_gDNA'],
+                          gdna1 = rep1[bc_vec, 'gDNA_cpm'],
+                          gdna2 = rep2[bc_vec, 'gDNA_cpm'],
+                          row.names=bc_vec)
+    rep_cor = cor(norm_data$rep1, norm_data$rep2)
+    return(bc_vec)
+}
+
+bc_list = list()
+# for (prom in unique(info$promoter)){
+class_vec = c('6'='repressed', '8'='escaper', '11'='repressed', 'hPGK'='iLAD',
+              '10'='repressed')
+COL_vec = c(repressed="#A020F0", escaper="#FFA500", iLAD="#0077FF")
+for (prom in names(class_vec)){
+    for (bio in unique(info$bio_rep)){
+        cat(paste0(prom, bio, ':\n'))
+        name_vec = info[info$promoter==prom & info$bio==bio, 'name']
+        rep1 = table_list[[name_vec[1]]]
+        rep2 = table_list[[name_vec[2]]]
+        class = as.character(class_vec[prom])
+        label = paste0(prom, bio)
+        bc_vec = check_reproducability(rep1, rep2, label)
+        bc_list[[label]] = bc_vec
+        density_plot = density_plot + add_density(rep1, rep2, bc_vec, class)
+    }
+}
+density_plot + scale_color_manual(values=c(COL_vec, COL_vec))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+
+
+rev_file_list = list.files('../../trip/cl20171214_TRIP_K562_evsr/mapping',
+                           pattern='2.table', full.names=T)
+names(rev_file_list) = gsub('.*mapping/(.*).2.table', '\\1', rev_file_list)
+
+map_info = data.frame(name=names(rev_file_list),
+                      promoter=gsub('(.+?)_.*', '\\1', names(rev_file_list)),
+                      bio_rep = gsub('.+?_(.+)_.*', '\\1', names(rev_file_list)),
+                      tech_rep = gsub('.+?_.+?_r([0-9])', '\\1', names(rev_file_list)),
+                      stringsAsFactors=F)
+
+
+
+rev_table_list = lapply(rev_file_list, read.table, header=T, stringsAsFactors=F,
+                        row.names=1)
+
+
+get_data_table <- function(data_rev, lad_gr, lmnb1_gr){
+    map_gr = GRanges(data_rev$seqname, IRanges(data_rev$start_pos,
+                                                data_rev$start_pos),
+                     strand = data_rev$ori)
+    map_gr$LAD = NA
+    names(map_gr) = rownames(data_rev)
+    o = findOverlaps(map_gr, lad_gr)
+    map_gr$LAD[queryHits(o)] = lad_gr[subjectHits(o)]$name
+    o = findOverlaps(map_gr, lmnb1_gr)
+    map_gr$lamin = NaN
+    map_gr$lamin[queryHits(o)] = lmnb1_gr[subjectHits(o)]$score
+    map_gr$reads1 = data_rev$reads1
+    map_gr$ratio1 = data_rev$reads1 / data_rev$total_mapped
+    map_gr$ratio2 = data_rev$reads2 / data_rev$total_mapped
+    map_gr$avg_mapq = data_rev$mapq_sum1 / data_rev$reads1
+    return(map_gr)
+}
+
+
+
+lad_hmm_gr = import.bed('/home/t.v.schaik/mydata/proj/tests/results/ts171030_PipelineImprovements/results_alldata/HMM/K562_r1_LMNB1-5kb_HMM.bed.gz')
+
+lmnb1_5kb = import.bw('/home/t.v.schaik/mydata/proj/tests/results/ts171030_PipelineImprovements/results_alldata/tracks/normalized/K562_r1_LMNB1-5kb.bw')
+
+
+lad_ad_gr = import.bed('/home/t.v.schaik/mydata/proj/tests/results/ts171030_PipelineImprovements/results_alldata/HMM/K562_r1_LMNB1-5kb_AD.bed.gz')
+
+border_gr = GRanges()
+for (chrom in seqlevels(lad_hmm_gr)){
+    chrom_gr = lad_hmm_gr[seqnames(lad_hmm_gr) == chrom]
+    chrom_gr = chrom_gr[chrom_gr$name != 'NA']
+    current_name = chrom_gr$name[1]
+    border_vec = c()
+    for (i in 1:length(chrom_gr)){
+        if (chrom_gr$name[i] == current_name){
+            start = i
+        } else {
+            current_name = chrom_gr$name[i]
+            border = (end(chrom_gr)[start] + start(chrom_gr)[i]) / 2
+            border_vec = c(border_vec, border)
+        }
+    }
+    this_border = GRanges(seqnames=chrom, IRanges(start=border_vec,
+                                                  end=border_vec))
+    border_gr = c(border_gr, this_border)
+}
+ad_vec = c('AD'='LAD',  'iAD'='iLAD', 'NA'=NA)
+lad_levels = c('LAD', 'iLAD')
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad) <- lad_levels
+all_data = data.frame()
+all_gr = GRanges()
+for (prom in names(class_vec)){
+    for (bio in unique(map_info$bio_rep)){
+        cat(paste0(prom, bio, ':\n'))
+        name_vec = map_info[map_info$promoter==prom & map_info$bio==bio, 'name']
+        rep_vec = map_info[map_info$promoter==prom & map_info$bio==bio, 'tech_rep']
+        name = name_vec[rep_vec=="1"]
+        rev_data = rev_table_list[name_vec]
+        rep1 = rev_data[[which(rep_vec=="1")]]
+        rep2 = rev_data[[which(rep_vec=="2")]]
+        rep1$ratio1 = rep1$reads1 / rep1$total_mapped
+        rep1$ratio2 = rep1$reads2 / rep1$total_mapped
+        rep1$avg_mapq = rep1$mapq_sum1 / rep1$reads1
+
+        rep2$ratio1 = rep2$reads1 / rep2$total_mapped
+        rep2$ratio2 = rep2$reads2 / rep2$total_mapped
+        rep2$avg_mapq = rep2$mapq_sum1 / rep2$reads1
+
+        rep1$unique = rep1$ratio1 > 0.7 & rep1$ratio2 < 0.1 & rep1$avg_mapq > 10 &
+                      rep1$reads1 > 5
+        rep2$unique = rep2$ratio1 > 0.7 & rep2$ratio2 < 0.1 & rep2$avg_mapq > 10 &
+                      rep2$reads2 > 5
+
+
+        shared_bc = rownames(rep1)[rep1$unique][rownames(rep1)[rep1$unique] %in%
+                                                rownames(rep2)[rep2$unique]]
+        print('uniquely mapped barcodes in both replicates:')
+        print(length(shared_bc))
+        print('uniquely mapped barcodes with same position:')
+        equal = rep1[shared_bc, c('seqname', 'ori', 'start_pos')] ==
+                    rep2[shared_bc, c('seqname', 'ori', 'start_pos')]
+        print(length(which(rowSums(equal) == 3)))
+        not_equal = shared_bc[which(rowSums(equal) != 3)]
+        ne_table = cbind(rep1[not_equal, c('seqname', 'ori', 'start_pos', 'total_mapped',
+                                'mapq_sum1')],
+                         rep2[not_equal, c('seqname', 'ori', 'start_pos', 'total_mapped',
+                                            'mapq_sum1')])
+        kable(ne_table)
+
+        print('uniquely mapped barcodes in rep1, not in rep2:')
+        unique_rep1 = rownames(rep1)[rep1$unique][!(rownames(rep1)[rep1$unique] %in%
+                                                    rownames(rep2)[rep2$unique])]
+        print(length(unique_rep1))
+
+        print('uniquely mapped barcodes in rep2, not in rep1:')
+        unique_rep2 = rownames(rep2)[rep2$unique][!(rownames(rep2)[rep2$unique] %in%
+                                                    rownames(rep1)[rep1$unique])]
+        print(length(unique_rep2))
+
+        shared_bc = rownames(rep1)[rownames(rep1) %in%
+                                   rownames(rep2)]
+        shared_bc = shared_bc[!shared_bc %in% not_equal]
+        equal = rep1[shared_bc, c('seqname', 'ori', 'start_pos')] ==
+                    rep2[shared_bc, c('seqname', 'ori', 'start_pos')]
+        equal_bc = shared_bc[which(rowSums(equal) == 3)]
+        data = rep1[equal_bc, ]
+        data[, c('total_mapped', 'mapq_sum1',
+                 'reads1', 'mapq_sum2', 'reads2')] =
+            rep1[equal_bc, c('total_mapped', 'mapq_sum1',
+                             'reads1', 'mapq_sum2', 'reads2')] +
+            rep2[equal_bc, c('total_mapped', 'mapq_sum1',
+                             'reads1', 'mapq_sum2', 'reads2')]
+        print('merge of replicates mapping to same position:')
+        print(dim(data))
+        not_equal_bc = shared_bc[which(rowSums(equal) != 3)]
+        data = rbind(data,
+                     rep1[not_equal_bc[rep1[not_equal_bc, 'unique']], ],
+                     rep2[not_equal_bc[rep2[not_equal_bc, 'unique']], ])
+        print('addition of barcodes in both replicates, mapping unique for 1 replicate:')
+        print(dim(data))
+
+        print('addition of barcodes only found in replicate 1:')
+        data = rbind(data, rep1[!rownames(rep1) %in%
+                                 rownames(rep2), ])
+        print(dim(data))
+
+        print('addition of barcodes only found in replicate 2:')
+        data = rbind(data, rep2[!rownames(rep2) %in%
+                                 rownames(rep1), ])
+        print(dim(data))
+
+        map_gr = get_data_table(data, lad_hmm_gr, lmnb1_5kb)
+        dist = distanceToNearest(map_gr, border_gr)
+        map_gr$border_dist = NaN
+        map_gr[queryHits(dist)]$border_dist = mcols(dist)$distance
+        unique_vec1 = map_gr$ratio1 > 0.7 & map_gr$ratio2 < 0.1 & map_gr$avg_mapq > 10
+        map_gr$unique = map_gr$ratio1 > 0.7 & map_gr$ratio2 < 0.1 & map_gr$avg_mapq > 10 &
+                        map_gr$reads1 > 5
+        print('LAD/iLAD classification:')
+        print(table(map_gr$LAD))
+        print('Uniquely mapped:')
+        print(table(unique_vec1))
+        print('Uniquely mapped with total reads > 5:')
+        print(table(map_gr$unique))
+        print('LAD/iLAD uniquely mapped:')
+        print(table(map_gr$LAD[map_gr$unique]))
+
+        name_vec = info[info$promoter==prom & info$bio==bio, 'name']
+        rep1 = table_list[[name_vec[1]]]
+        rep2 = table_list[[name_vec[2]]]
+        bc_vec = names(map_gr)
+        if (prom != '10'){
+            count_data = data.frame(row.names=bc_vec,
+                                    cDNA_cpm=rowMeans(cbind(rep1[bc_vec, 'cDNA_cpm'],
+                                                            rep2[bc_vec, 'cDNA_cpm'])),
+                                    gDNA_cpm=rowMeans(cbind(rep1[bc_vec, 'gDNA_cpm'],
+                                                            rep2[bc_vec, 'gDNA_cpm'])))
+            gDNA_count = cbind(rep1[bc_vec, 'gDNA_count'], rep2[bc_vec, 'gDNA_count'])
+            count_data$min_gDNA = apply(gDNA_count, 1, min)
+            size = vector(length=nrow(count_data))
+            size[which(count_data$min_gDNA <= 100)] = "gDNA <= 100"
+            size[which(count_data$min_gDNA > 100 &
+                       count_data$min_gDNA <= 1000)] = "100 < gDNA <= 1000"
+            size[which(count_data$min_gDNA > 1000 &
+                       count_data$min_gDNA <= 10000)] = "1000 < gDNA <= 10000"
+            size[which(count_data$min_gDNA > 10000)] = "gDNA > 10000"
+            size_vec = c("gDNA <= 100"=0.1, "100 < gDNA <= 1000"=0.5,
+                         "1000 < gDNA <= 10000"=1, "gDNA > 10000"=2)
+            count_data$size = factor(size, levels=names(size_vec))
+            count_data$norm = count_data$cDNA_cpm / count_data$gDNA_cpm
+            count_data$lad = ad_vec[map_gr$LAD]
+
+            count_data$lamin = map_gr$lamin
+            count_data$border_dist = map_gr$border_dist
+            count_data$unique = map_gr$unique
+            cd = count_data[count_data$unique & !is.na(count_data$norm) &
+                            !is.na(count_data$lamin), ]
+            lad_names = paste0(lad_levels, '; n=', table(cd$lad)[lad_levels])
+            names(lad_names) = lad_levels
+            cd$lad_n = lad_names[cd$lad]
+            COL_lad_n = COL_lad[names(lad_names)]
+            names(COL_lad_n) = lad_names
+            cd$log2 = log2(cd$norm + 0.001)
+            lm_fit = lm(cd$log2 ~ -1 + cd$lamin)
+            title = paste0(name, '; ', class_vec[prom], '\nlog(expr) = ',
+                           round(lm_fit$coefficients[1], 2), ' * log(lamin)')
+            cd$prom = prom
+            cd$bio = bio
+            data_summary = aggregate(log2 ~ lad_n, median, data=cd)
+            all_data = rbind(all_data, cd)
+            all_gr = c(all_gr, map_gr)
+            print(ggplot(cd, aes(x=lad_n, y=log2, fill=lad_n, ymin=log2, ymax=log2)) +
+                        ggtitle(paste0(name, '; ', class_vec[prom])) +
+                        geom_violin() +
+                        scale_fill_manual(values=COL_lad_n) +
+                        ylim(-10, 6.2) +
+                        geom_point(aes(size=size), position=position_jitter(width=0.3),
+                                   alpha=0.5) +
+                        scale_size_manual(values=size_vec) +
+                        geom_crossbar(data=data_summary, color = "green", width=0.3))
+            print(ggplot(cd, aes(x=lamin, y=log2)) +
+                        ggtitle(title) +
+                        ylim(-10, 6.2) +
+                        geom_smooth(method='lm') +
+                        geom_point(aes(size=size), alpha=0.8) +
+                        scale_size_manual(values=size_vec))
+        }
+
+    }
+}
+
+all_gr = all_gr[names(all_gr) %in% rownames(all_data)]
+all_gr$promoter = all_data[names(all_gr), 'prom']
+all_gr$expression = all_data[names(all_gr), 'log2']
+all_gr$min_gDNA = all_data[names(all_gr), 'min_gDNA']
+all_gr$min_gDNA = all_data[names(all_gr), 'min_gDNA']
+all_gr$class = class_vec[all_gr$promoter]
+
+all_unique_gr = all_gr[all_gr$unique & all_gr$LAD %in%c('AD', 'iAD'), ]
+
+
+parse_hammock <- function(file_name){
+    data = read.table(file_name, stringsAsFactors = F,
+                      col.names=c('seqnames', 'start', 'end', 'string'))
+    split = strsplit(gsub(']', '', data$string),
+                   perl=T ,split='[,[]')
+    split_matrix = do.call(rbind, split)
+
+    data$signal_value = as.numeric(split_matrix[,2])
+    data$p_value = as.numeric(split_matrix[,3])
+    data$q_value = as.numeric(split_matrix[,4])
+    gr = makeGRangesFromDataFrame(data[,-4], keep.extra.columns=T)
+}
+
+
+H3K27_schmidl = paste0('~/mydata/data/tracks/hg38/',
+                       'H3K27ac_K562_cistrome_narrowPeak_GSM1782704.bed.gz')
+H3K27_schmidl_peaks = parse_hammock(H3K27_schmidl)
+
+
+H3K27_Pradeepa = paste0('~/mydata/data/tracks/hg38/',
+                        'H3K27ac_K562_cistrome_narrowPeak_GSM2054696.bed.gz')
+H3K27_Pradeepa_peaks = parse_hammock(H3K27_Pradeepa)
+
+H3K4me1_Pradeepa = paste0('~/mydata/data/tracks/hg38/',
+                          'H3K4me1_K562_cistrome_narrowPeak_GSM2054697.bed.gz')
+H3K4me1_Pradeepa_peaks = parse_hammock(H3K4me1_Pradeepa)
+
+H3K4me3_schmidl = paste0('~/mydata/data/tracks/hg38/',
+                          'H3K4me3_K562_cistrome_narrowPeak_GSM1782741.bed.gz')
+H3K4me3_schmidl_peaks = parse_hammock(H3K4me3_schmidl)
+
+
+H3K9ac = paste0('~/mydata/data/tracks/hg38/',
+                'H3K9ac_K562_cistrome_narrowPeak_GSM788082.bed.gz')
+H3K9ac_peaks = parse_hammock(H3K9ac)
+
+ATAC = paste0('~/mydata/data/tracks/hg38/',
+              'ATAC_K562_cistrome_narrowPeak_GSM1782765.bed.gz')
+ATAC_peaks = parse_hammock(ATAC)
+
+
+all_unique_gr$nearest_Pradeepa = mcols(distanceToNearest(all_unique_gr,
+                                                       H3K27_Pradeepa_peaks))$distance
+
+all_unique_gr$nearest_H3K4me1 = mcols(distanceToNearest(all_unique_gr,
+                                                     H3K4me1_Pradeepa_peaks))$distance
+
+all_unique_gr$nearest_schmidl = mcols(distanceToNearest(all_unique_gr,
+                                                       H3K27_schmidl_peaks))$distance
+
+all_unique_gr$nearest_H3K4me3 = mcols(distanceToNearest(all_unique_gr,
+                                                     H3K4me3_schmidl_peaks))$distance
+
+all_unique_gr$nearest_H3K9ac = mcols(distanceToNearest(all_unique_gr,
+                                                           H3K9ac_peaks))$distance
+
+
+all_unique_gr$nearest_ATAC = mcols(distanceToNearest(all_unique_gr,
+                                                         ATAC_peaks))$distance
+
+data = as.data.frame(mcols(all_unique_gr))
+data$nearest_peak = as.numeric(apply(data,1, function(x){
+                                        min(x[c('nearest_Pradeepa',
+                                                'nearest_H3K4me1',
+                                                'nearest_H3K4me3',
+                                                'nearest_schmidl',
+                                                'nearest_H3K9ac')])}))
+data$LAD = c('AD'='LAD', 'iAD'='iLAD')[data$LAD]
+
+for (class in unique(class_vec)){
+    this_data = data[data$class==class,]
+    lad_names = paste0(lad_levels, '; n=', table(this_data$lad))
+    names(lad_names) = lad_levels
+    this_data$lad_n = lad_names[this_data$lad]
+    COL_lad_n = COL_lad[names(lad_names)]
+    names(COL_lad_n) = lad_names
+    data_summary = aggregate(expression ~ lad_n, median, data=this_data)
+
+    print(ggplot(this_data, aes(x=lad_n, y=expression, fill=lad_n, ymin=expression,
+                                ymax=expression)) +
+            geom_violin() +
+            ggtitle(class) +
+            scale_fill_manual(values=COL_lad_n) +
+            ylim(-10, 6.2) +
+            geom_point(position=position_jitter(width=0.3),
+                       alpha=0.5, size=0.5) +
+            theme_bw() +
+            xlab('LAD HMM call') +
+            ylab('normalized cDNA/gDNA (log2)') +
+            geom_crossbar(data=data_summary, color = "green", width=0.3))
+}
+
+
+```
+
+```{r, fig.width=10, fig.height=20}
+ggplot(data, aes(x=log10(border_dist + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('distance to LAD border') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+
+ggplot(data, aes(x=log10(nearest_Pradeepa + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    xlim(0,7) +
+    ggtitle('H3K27ac Pradeepa et al.') +
+    facet_wrap(~class, nrow=3)
+
+ggplot(data, aes(x=log10(nearest_schmidl + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('H3K27ac Schmidl et al.') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+ggplot(data, aes(x=log10(nearest_H3K4me1 + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('H3K4me1 Pradeepa et al.') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+
+ggplot(data, aes(x=log10(nearest_H3K4me3 + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('H3K4me3 Schmidl et al.') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+ggplot(data, aes(x=log10(nearest_H3K9ac + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('H3K9ac ENCODE') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+ggplot(data, aes(x=log10(nearest_ATAC + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    ggtitle('ATAC-seq') +
+    xlim(0,7) +
+    facet_wrap(~class, nrow=3)
+
+ggplot(data, aes(x=log10(nearest_peak + 1), y=expression, color=class)) +
+    geom_point() +
+    scale_color_manual(values=COL_class) +
+    xlim(0,7) +
+    ggtitle('nearest active histone mark (H3K27ac, H3K4me1, H3K4me3, H3K9ac)') +
+    facet_wrap(~class, nrow=3)
+```
+
+
+
+## distance to escaper promoters and escaper enhancers
+```{r}
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+P$CAGE_K562 = K562_CAGE[p_complete%in%rownames(P)]
+P$CAGE_HT1080 = HT1080_CAGE[p_complete%in%rownames(P),7]
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562', 'CAGE_K562',
+              'CAGE_HT1080')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+```
+
+```{r}
+
+sure_plus = read.table('../raw_data/enhancer_regions_sure_plus.txt.gz', row.names=4,
+                       stringsAsFactors=F)
+sure_minus = read.table('../raw_data/enhancer_regions_sure_minus.txt.gz', row.names=4,
+                        stringsAsFactors=F)
+grocap_plus = read.table('../raw_data/enhancer_regions_grocap_plus.txt.gz', row.names=4,
+                         stringsAsFactors=F)
+grocap_minus = read.table('../raw_data/enhancer_regions_grocap_minus.txt.gz', row.names=4,
+                          stringsAsFactors=F)
+colnames(sure_plus) =
+    colnames(sure_minus) =
+    colnames(grocap_plus) =
+    colnames(grocap_minus) = c('seqnames', 'start', 'end', 'size', 'num_data',
+                               'min', 'max', 'mean', 'sum')
+
+sure_plus$mean = sure_plus$sum / sure_plus$num_data
+sure_minus$mean = sure_minus$sum / sure_minus$num_data
+grocap_plus$mean = grocap_plus$sum / grocap_plus$num_data
+grocap_minus$mean = grocap_minus$sum / grocap_minus$num_data
+
+P_enh = data.frame(SuRE=rowMeans(cbind(sure_plus$mean, sure_minus$mean)),
+                   GROcap=rowMeans(cbind(grocap_plus$mean,
+                                   abs(grocap_minus$mean))),
+                   row.names=rownames(sure_plus))
+enh_loc = do.call(rbind.data.frame, c(strsplit(rownames(P_enh), '[:-]'),
+                  stringsAsFactors=F))
+colnames(enh_loc) = c('seqnames', 'start', 'end')
+enh_loc$start = as.numeric(enh_loc$start)
+enh_loc$end = as.numeric(enh_loc$end)
+
+enh_gr = makeGRangesFromDataFrame(enh_loc)
+
+
+chr_y = grep('chrY', rownames(P_enh))
+P_enh = P_enh[-chr_y,]
+enh_loc = enh_loc[-chr_y, ]
+enh_gr = enh_gr[-chr_y]
+P_enh$SuRE = pseudo_log10(P_enh$SuRE)
+P_enh$GROcap = pseudo_log10(P_enh$GROcap)
+
+LAD_K562 = import.bed('../../../data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+enh_gr = makeGRangesFromDataFrame(enh_loc)
+o = findOverlaps(enh_gr, LAD_K562[LAD_K562$name=='LAD'])
+P_enh$LAD = 0
+P_enh$LAD[queryHits(o)] = 1
+
+RM_enh = create_RM(P_enh, 'SuRE', 'GROcap', lad='LAD')
+
+P_enh$LRS<- P_enh$GROcap - approx(x=RM_enh$x.mean, y=RM_enh$y.ilad,
+                                  xout=P_enh$SuRE, rule=2)$y
+
+P_enh$class = classify(P_enh$SuRE, P_enh$GROcap, P_enh$LRS, P_enh$LAD, -2)
+
+```
+
+```{r}
+enh_gr$name = P_enh$class
+
+start(enh_gr) = round((start(enh_gr) + end(enh_gr)) / 2)
+end(enh_gr) = start(enh_gr)
+
+tss_gr$name = P$class_GROcap
+
+export.bed(tss_gr, '../raw_data/tss_class_hg19.bed')
+export.bed(enh_gr, '../raw_data/enh_class_hg19.bed')
+
+```
+
+```
+liftOver raw_data/tss_class_hg19.bed ~/mydata/data/hg19ToHg38.over.chain.gz \
+         raw_data/tss_class_hg38.bed raw_data/tss_class_leftover.bed
+
+liftOver raw_data/enh_class_hg19.bed ~/mydata/data/hg19ToHg38.over.chain.gz \
+         raw_data/enh_class_hg38.bed raw_data/enh_class_leftover.bed
+```
+
+
+```{r, fig.width=10, fig.height=10}
+enh_gr = import.bed('../raw_data/enh_class_hg38.bed')
+tss_gr = import.bed('../raw_data/tss_class_hg38.bed')
+
+for (class in c('iLAD', 'escaper', 'inactive', 'repressed')){
+
+    data = as.data.frame(mcols(all_lad_gr))
+    data$nearest = Inf
+    near = distanceToNearest(all_lad_gr,
+                             tss_gr[tss_gr$name==class])
+    data[queryHits(near), 'nearest'] = mcols(near)$distance
+    print(ggplot(data, aes(x=log10(nearest), y=expression, color=class)) +
+              geom_point() +
+              xlim(0,7) +
+              scale_color_manual(values=COL_class) +
+              facet_wrap(~class, nrow=3) +
+              ggtitle(paste('distance to nearest', class, 'promoter')))
+}
+
+for (class in c('iLAD', 'escaper', 'inactive', 'repressed')){
+
+    data = as.data.frame(mcols(all_lad_gr))
+    data$nearest = Inf
+    near = distanceToNearest(all_lad_gr,
+                             enh_gr[enh_gr$name==class])
+    data[queryHits(near), 'nearest'] = mcols(near)$distance
+    print(ggplot(data, aes(x=log10(nearest), y=expression, color=class)) +
+              geom_point() +
+              xlim(0,7) +
+              scale_color_manual(values=COL_class) +
+              facet_wrap(~class, nrow=3) +
+              ggtitle(paste('distance to nearest', class, 'enhancer')))
+}
+
+enh_tss_gr = c(enh_gr, tss_gr)
+
+
+for (class in c('iLAD', 'escaper', 'inactive', 'repressed')){
+
+    data = as.data.frame(mcols(all_lad_gr))
+    data$nearest = Inf
+    near = distanceToNearest(all_lad_gr,
+                             enh_tss_gr[enh_tss_gr$name==class])
+    data[queryHits(near), 'nearest'] = mcols(near)$distance
+    print(ggplot(data, aes(x=log10(nearest), y=expression, color=class)) +
+              geom_point() +
+              xlim(0,7) +
+              scale_color_manual(values=COL_class) +
+              facet_wrap(~class, nrow=3) +
+              ggtitle(paste('distance to nearest', class, 'promoter/enhancer')))
+}
+
+
+```

@@ -1,0 +1,462 @@
+# r document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 22-09-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly expressed. These genes can either be actively repressed by their DNA context (e.g. heterochromatin, lamina association), or simply be inactive (because essential factors for expression are missing?). Yet another group of genes seem to evade gene repression in the context of lamina associated domains.
+
+
+
+
+```{r, fig.width=10, fig.height=10}
+
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense', 'HEPG2.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:14]<-c("SuRE_K562", "SuRE_HepG2", "SuRE_HT1080", "GROcap_K562",
+                  "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+sd_jit = min(P$GROcap_K562[P$GROcap_K562>0])
+jit = rnorm(nrow(P), sd = sd_jit / 20)
+
+P$GROcap_K562_jitter = log10(P$GROcap_K562 + jit + sd_jit / 2)
+
+for (col in c('SuRE_K562', 'SuRE_HepG2', 'SuRE_HT1080', 'GROcap_K562',
+              'CAGE_K562_encode')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+P$gene_id = id_table[P$name,'gene_id']
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                            start=P$txStart,
+                                            end=P$txEnd,
+                                            strand=P$strand,
+                                            name=P$name,
+                                            tss=P$tss),
+                                            keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+P$LRS_GROcap <- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+P$class = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+```{r, fig.width=10, fig.height=10}
+gencode_v24 = read.table('../raw_data/gencode_v24_maxcage_tss.txt')
+
+gene_id_v24 = gsub('[.].*', '', gencode_v24[, 5])
+gene_id_v19 = gsub('[.].*', '', P$gene_id)
+
+match = match(gene_id_v19, gene_id_v24)
+P$chr_hg38 = gencode_v24[match, 1]
+P$tss_hg38 = gencode_v24[match, 2]
+P$strand_hg38 = gencode_v24[match, 4]
+
+
+tss_hg38_gr = GRanges(seqnames = P$chr_hg38[!is.na(match)],
+                      IRanges(P$tss_hg38[!is.na(match)],
+                              P$tss_hg38[!is.na(match)]),
+                      strand=P$strand_hg38[!is.na(match)])
+tss_hg38_gr$name = P$class[!is.na(match)]
+width = P$txEnd[!is.na(match)] - P$txStart[!is.na(match)]
+
+export.bed(tss_hg38_gr[width > 20000], '../raw_data/tss_v19_to_v24_hg38_classes.bed')
+```
+
+```
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                       -S $CUTRUN \
+                                       --referencePoint TSS \
+                                       -a 22000 -b 22000 \
+                                       --binSize=200 -p 30 \
+                                       --outFileName raw_data/lmnb1_cutrun_tss.txt.gz
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_min120_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                      -S $CUTRUN \
+                                      --referencePoint TSS \
+                                      -a 22000 -b 22000 \
+                                      --binSize=200 -p 30 \
+                                      --averageTypeBins sum \
+                                      --outFileName raw_data/lmnb1_cutrun_min120_tss.txt.gz
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_plus150_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                      -S $CUTRUN \
+                                      --referencePoint TSS \
+                                      -a 22000 -b 22000 \
+                                      --binSize=200 -p 30 \
+                                      --outFileName raw_data/lmnb1_cutrun_plus150_tss.txt.gz
+```
+
+```{r, fig.width=10, fig.height=10}
+cutrun_22000_all = read.table('../raw_data/lmnb1_cutrun_tss.txt.gz', stringsAsFactors=F, skip=1)
+class_vec = gsub('_r[0-9]+', '', cutrun_22000_all[,4])
+pos_vec_22000 = ((-22000 / 200) : (22000 / 200 - 1) + .5) * 200
+
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_22000_all[,7:ncol(cutrun_22000_all)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_22000
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-20000,20000))
+
+
+
+cutrun_22000_small = read.table('../raw_data/lmnb1_cutrun_min120_tss.txt.gz', stringsAsFactors=F, skip=1)
+
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_22000_small[,7:ncol(cutrun_22000_small)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_22000
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal < 120bp') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-20000,20000))
+
+
+
+cutrun_22000_big = read.table('../raw_data/lmnb1_cutrun_plus150_tss.txt.gz', stringsAsFactors=F, skip=1)
+
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_22000_big[,7:ncol(cutrun_22000_big)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_22000
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal > 150bp') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-20000,20000))
+```
+
+
+
+
+```
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                       -S $CUTRUN \
+                                       --referencePoint TSS \
+                                       -a 2200 -b 2200 \
+                                       --binSize=20 -p 30 \
+                                       --outFileName raw_data/lmnb1_cutrun_tss_2200.txt.gz
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_min120_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                      -S $CUTRUN \
+                                      --referencePoint TSS \
+                                      -a 2200 -b 2200 \
+                                      --binSize=20 -p 30 \
+                                      --outFileName raw_data/lmnb1_cutrun_min120_tss_2200.txt.gz
+
+CUTRUN=/home/t.v.schaik/mydata/proj/tests/results/ts180105_pADamID_CUTRUN/results_cutrun/coverage/CUTRUN_LMNB1_plus150_coverage_FPKM.bw
+nice -19 computeMatrix reference-point -R raw_data/tss_v19_to_v24_hg38_classes.bed \
+                                      -S $CUTRUN \
+                                      --referencePoint TSS \
+                                      -a 2200 -b 2200 \
+                                      --binSize=20 -p 30 \
+                                      --outFileName raw_data/lmnb1_cutrun_plus150_tss_2200.txt.gz
+```
+
+```{r, fig.width=10, fig.height=10}
+cutrun_2200_all = read.table('../raw_data/lmnb1_cutrun_tss_2200.txt.gz', stringsAsFactors=F, skip=1)
+pos_vec_2200 = ((-2200 / 20) : (2200 / 20 - 1) + .5) * 20
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_2200_all[,7:ncol(cutrun_2200_all)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_2200
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-2000,2000))
+
+
+
+
+cutrun_2200_small = read.table('../raw_data/lmnb1_cutrun_min120_tss_2200.txt.gz', stringsAsFactors=F, skip=1)
+
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_2200_small[,7:ncol(cutrun_2200_small)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_2200
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal < 120bp') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-2000,2000))
+
+
+
+cutrun_2200_big = read.table('../raw_data/lmnb1_cutrun_plus150_tss_2200.txt.gz', stringsAsFactors=F, skip=1)
+
+mean_matrix = ddply(data.frame(class=class_vec,
+                               cutrun_2200_big[,7:ncol(cutrun_2200_big)]),
+                    .(class), function(x){colMeans(x[2:ncol(x)])})
+colnames(mean_matrix)[2:ncol(mean_matrix)] = pos_vec_2200
+mean_melt = melt(mean_matrix[mean_matrix$class!='boundary', ], id.vars=c('class'))
+
+mean_melt$pos = as.numeric(as.character(mean_melt$variable))
+ggplot(mean_melt, aes(x=pos, y=value, color=class)) +
+    geom_line() +
+    scale_color_manual(values=COL_class) +
+    scale_fill_manual(values=COL_class) +
+    ylab('Lmnb1 cut and run mean signal > 150bp') +
+    theme_bw() +
+    coord_cartesian(xlim=c(-2000,2000))
+```
+
+
+
+
+```{r, fig.width=10, fig.height=10}
+
+
+esc_matrix = cutrun_22000_all[class_vec=='escaper', c(4, 7:ncol(cutrun_22000_all))]
+rownames(esc_matrix) = cutrun_22000_all[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_22000
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal') +
+              coord_cartesian(xlim=c(-20000,20000)))
+}
+
+esc_matrix = cutrun_22000_small[class_vec=='escaper', c(4, 7:ncol(cutrun_22000_small))]
+rownames(esc_matrix) = cutrun_22000_small[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_22000
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal < 120bp') +
+              coord_cartesian(xlim=c(-20000,20000)))
+}
+
+
+esc_matrix = cutrun_22000_big[class_vec=='escaper', c(4, 7:ncol(cutrun_22000_big))]
+rownames(esc_matrix) = cutrun_22000_big[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_22000
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal >150bp') +
+              coord_cartesian(xlim=c(-20000,20000)))
+}
+esc_matrix = cutrun_2200_all[class_vec=='escaper', c(4, 7:ncol(cutrun_2200_all))]
+rownames(esc_matrix) = cutrun_2200_all[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_2200
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal') +
+              coord_cartesian(xlim=c(-2000,2000)))
+}
+
+esc_matrix = cutrun_2200_small[class_vec=='escaper', c(4, 7:ncol(cutrun_2200_small))]
+rownames(esc_matrix) = cutrun_2200_small[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_2200
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal < 120bp') +
+              coord_cartesian(xlim=c(-2000,2000)))
+}
+
+
+esc_matrix = cutrun_2200_big[class_vec=='escaper', c(4, 7:ncol(cutrun_2200_big))]
+rownames(esc_matrix) = cutrun_2200_big[class_vec=='escaper', 4]
+colnames(esc_matrix)[2:ncol(esc_matrix)] = pos_vec_2200
+
+for (i in 1:5){
+    s = sample(rownames(esc_matrix), 3)
+    esc_melt = melt(esc_matrix[s,])
+    esc_melt$pos = as.numeric(as.character(esc_melt$variable))
+    print(ggplot(esc_melt, aes(x=pos, y=value, color=V4)) +
+              geom_line() +
+              theme_bw() +
+              ylab('Lmnb1 cut and run mean signal >150bp') +
+              coord_cartesian(xlim=c(-2000,2000)))
+}
+
+```

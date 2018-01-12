@@ -1,0 +1,380 @@
+# knitr document van Steensel lab
+
+# Gene repression in LADs
+## Christ Leemans, 03-11-2016 - 26-07-2017
+
+## Introduction
+Generally speaking, genes inside lamina associated domains are not or very lowly
+expressed. These genes can either be actively repressed by their DNA context
+(e.g. heterochromatin, lamina association), or simply be inactive
+(because essential factors for expression are missing?). Yet another group of
+genes seem to evade gene repression in the context of lamina associated domains.
+In this report I would like to take another look at transcription factors which
+are able to separate these groups. This time I will use lasso regression.
+
+
+## library and data loading
+```{r, fig.width=10, fig.height=10, echo=FALSE, fig.width=10, fig.height=10}
+
+library(reshape2)
+library(rtracklayer)
+library(ggplot2)
+library(gridExtra)
+library(plyr)
+library(scales)
+library(grid)
+library(gtable)
+library(affy)
+library(limma)
+library(biomaRt)
+library(glmnet)
+library(doMC)
+registerDoMC(cores=10)
+## FROM STACKOVERFLOW:
+## https://stackoverflow.com/questions/12539348/ggplot-separate-legend-and-plot
+g_legend<-function(a.gplot){
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+
+## get a table with matching sets
+## table = complete table to take matching sets from
+## class_col = column name of class of interest
+## class = name of class to match the set on
+## order_on = column name to order on
+matchSet <- function(table, class_col, class, order_on){
+  o_vec = order(table[,order_on])
+  o_table = table[o_vec, ]
+  setA = which(o_table[,class_col]==class)
+  setB = c(setA + 1, setA -1)
+  ## check if setB is all within the possible indexes
+  setB = setB[setB %in% 1:length(o_vec)]
+  ## can also return o_table[unique(c(setA, setB)), ]
+  ## but this way order is perserved.
+  i_vec = o_vec[unique(c(setA, setB))]
+  return(table[i_vec[order(i_vec)], ])
+}
+
+
+COLi<-"#00BBFF11" #dot color for iLAD promoters
+COL_lad<-c("#FF0000", "#0077FF")
+names(COL_lad)<-c('LAD', 'iLAD')
+
+#color vector for plotting:
+COL_class<-c("#A020F0", "#FFA500", "#006400", "#7e7e7e", "#0077FF")
+names(COL_class)<-c("repressed", "escaper", "inactive", 'boundary', 'iLAD')
+
+COL<-c("#A020F0", "#FFA500", "#006400")
+names(COL)<-c("repressed", "escaper", "inactive")
+
+
+
+id_table = read.table('../raw_data/transcript.table', stringsAsFactors=F,
+                      row.names=1, col.names=c('transcript_id', 'gene_id',
+                                               'symbol'))
+load("~joris/mydata/git/SuRE/Joris//analysis_postNBT/Gencode_DF_generation_170707/gencode.sure.170712.rda")
+
+
+P<-gencode.sure.170712[,c('chr', 'strand', 'txStart', 'txEnd', 'name', 'name2',
+                          'tss', 'distance.to.previous.tss',
+                          'k562.combined.45.55.sense',
+                          'HT1080.sense', 'gro.cap.1kb.sense',
+                          'encode.cage.reprocessed.1kb.sense',
+                          'nr.of.tissues.in.which.expressed.max')]
+
+names(P)[9:13]<-c("SuRE_K562", "SuRE_HT1080", "GROcap_K562", "CAGE_K562_encode", 'tissues_expressed')
+
+rownames(P) = P$name
+
+P$gene_id = id_table[P$name,'gene_id']
+
+
+most_active <- function(P){
+    result = ddply(P, .(gene_id), function(x){
+        if (nrow(x)==1){
+            result = x[1,]
+        } else {
+            result = x[order(x$SuRE_K562, decreasing=T)[1],]
+        }
+        return(result)
+    })
+    rownames(result) = result$name
+    return(result)
+}
+
+p_most_active = most_active(P)
+
+
+p_other = P[!rownames(P)%in%rownames(p_most_active), ]
+p_new_names = rownames(p_most_active)
+while (nrow(p_other) > 0){
+    p_new = P[p_new_names, ]
+    active_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_new$chr,
+                                                   start=p_new$tss,
+                                                   end=p_new$tss,
+                                                   strand=p_new$strand),
+                                                   keep.extra.columns=TRUE)
+    other_gr = makeGRangesFromDataFrame(data.frame(seqnames=p_other$chr,
+                                                   start=p_other$tss,
+                                                   end=p_other$tss,
+                                                   strand=p_other$strand),
+                                                   keep.extra.columns=TRUE)
+    o = findOverlaps(active_gr,other_gr, maxgap=500, ignore.strand=FALSE)
+    sub_o = o[p_new[queryHits(o), 'gene_id'] == p_other[subjectHits(o), 'gene_id']]
+    p_other = p_other[-subjectHits(sub_o), ]
+    p_active = most_active(p_other)
+    p_other = p_other[!rownames(p_other)%in%rownames(p_active), ]
+    p_new_names = c(p_new_names, rownames(p_active))
+}
+
+p_complete = rownames(P)
+
+P = P[rownames(P)%in%p_new_names, ]
+
+gene_gr <-makeGRangesFromDataFrame(data.frame(seqnames=P$chr,
+                                              start=P$txStart,
+                                              end=P$txEnd,
+                                              strand=P$strand,
+                                              name=P$name,
+                                              tss=P$tss),
+                                              keep.extra.columns=TRUE)
+names(gene_gr) = P$name
+tss_gr = gene_gr
+ranges(tss_gr) = IRanges(gene_gr$tss,
+                         gene_gr$tss)
+names(tss_gr) = P$name
+export.bed(tss_gr, '../raw_data/tss.bed')
+
+## get LAD data for K562
+LAD_K562 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20161019_LAD_continuous_2state_K562.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_K562[LAD_K562$name=='LAD'])
+P$LAD_K562 = 0
+P$LAD_K562[queryHits(o)] = 1
+
+## now repeat for HT1080
+LAD_HT1080 = import.bed('~c.leemans/mydata/data/tracks/hg19/cl20170713_HT1080_LAD_continuous_2state.bed')
+## to keep with Joris's previous analysis, let's assign a state to every promoter
+o = findOverlaps(tss_gr, LAD_HT1080[LAD_HT1080$name=='LAD'])
+P$LAD_HT1080 = 0
+P$LAD_HT1080[queryHits(o)] = 1
+
+
+K562_CAGE_rep1 = read.table('../results/tss_CAGE_K562_rep1.bed')
+K562_CAGE_rep2 = read.table('../results/tss_CAGE_K562_rep2.bed')
+HT1080_CAGE = read.table('../results/tss_CAGE_HT1080.bed')
+
+K562_CAGE = rowSums(cbind(K562_CAGE_rep1[,7], K562_CAGE_rep2[,7]))
+P$CAGE_K562 = K562_CAGE[p_complete%in%rownames(P)]
+P$CAGE_HT1080 = HT1080_CAGE[p_complete%in%rownames(P),7]
+
+pseudo_log10 <- function(val_vec){
+    Pseud=min(val_vec[val_vec > 0], na.rm=TRUE)/2
+    val_vec = val_vec + Pseud
+    return(log10(val_vec))
+}
+for (col in c('SuRE_K562', 'SuRE_HT1080', 'GROcap_K562', 'CAGE_K562',
+              'CAGE_HT1080')){
+    P[,col] = pseudo_log10(P[,col])
+}
+
+
+
+```
+
+
+```{r, fig.width=10, fig.height=10, echo=FALSE}
+
+create_RM <-function(data, x, y, lad){
+    #then calculate running mean for iLAD promoters:
+    #sort by SuRE and then random for ties
+    o = order(data[,x],sample(c(1:nrow(data))))
+
+    x_sorted = data[o,x]
+    y_sorted = data[o,y]
+    lad_sorted = data[o,lad]
+
+    n<-60 #number of windows
+    w<-501 #window width (number of datapoints); if n*w > nrow(P) then windows overlap
+    s<-round(seq(from=w/2+0.0001, to=nrow(data)-w/2, length.out=n))
+    RM<-data.frame(x.low=rep(NA,n), x.mean=rep(NA,n), x.hi=rep(NA,n), y.lad=rep(NA,n), y.ilad=rep(NA,n))
+    RM$x.low=x_sorted[s-floor(w/2)]
+    for(i in 1:n){RM$x.mean[i]=mean(x_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))], na.rm=TRUE)}
+    RM$x.hi=x_sorted[s+floor(w/2)]
+    for(i in 1:n)
+      {t<-data.frame(LAD=lad_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))],
+                     y=y_sorted[(s[i]-floor(w/2)):(s[i]+floor(w/2))])
+       RM$y.lad[i]<-mean(t$y[t$LAD==1], na.rm=TRUE)
+       RM$y.ilad[i]<-mean(t$y[t$LAD==0], na.rm=TRUE)
+      }
+    #add first datapoint (SuRE equals pseudocount)
+    RM1<-RM[0,] #empty df
+    RM1[1,]<-c(rep(min(x_sorted),3), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==1]), mean(y_sorted[x_sorted==min(x_sorted) & lad_sorted==0]))
+    RM<-rbind(RM1, RM)
+    rm(RM1)
+    return(RM)
+}
+
+RM_GRO = create_RM(P, 'SuRE_K562', 'GROcap_K562', lad='LAD_K562')
+
+P$LRS_GROcap<- P$GROcap_K562 - approx(x=RM_GRO$x.mean, y=RM_GRO$y.ilad, xout=P$SuRE_K562, rule=2)$y
+
+
+classify <- function(sure, exp, lrs, lad, exp_cut){
+    INACT<- sure< -0.3 & lad & exp< exp_cut #inactive
+    NREP<- sure> 0 & lrs > -0.5 & lad & exp> exp_cut #not repressed
+    REP<- sure> 0.3 & lrs < -1 & lad  & exp< exp_cut #repressed
+    Pcnts<-c(length(which(REP)), length(which(NREP)), length(which(INACT)))
+    names(Pcnts)<-c("repressed", "escaper", "inactive")
+    BND <- lad & !INACT & !NREP & !REP
+    class = rep(NA, length(sure))
+    class[lad==0] = 'iLAD'
+    class[INACT]<-"inactive"
+    class[NREP]<-"escaper"
+    class[REP]<-"repressed"
+    class[BND] <- "boundary"
+    return(factor(class, levels=c('iLAD', 'escaper', 'repressed', 'inactive', 'boundary')))
+}
+
+P$class_GROcap = classify(P$SuRE_K562, P$GROcap_K562, P$LRS_GROcap, P$LAD_K562, -2)
+
+```
+
+
+```{r}
+
+
+rnaseq_rep1 = read.table('../raw_data/K562_rna_rep1_ENCFF004LGY.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+rnaseq_rep2 = read.table('../raw_data/K562_rna_rep2_ENCFF222NCB.tsv',
+                         header=T, row.names=1, stringsAsFactors=F)
+```
+
+```
+AffinityProfile -sequence=raw_data/tssr_300_50.fa \
+                -strand=2 \
+                -psam_list=$REDUCE_SUITE/data/PSAMs/Jaspar_2016.list \
+                -output=raw_data/jaspar_affinity_300_50
+
+```
+
+
+
+```{r}
+
+tf_table = read.table('../raw_data/tf_table.txt', sep='\t', row.names=1,
+                      stringsAsFactors=F)
+colnames(tf_table) = c('name', 'species', 'class', 'family')
+
+tf_translation = ddply(tf_table[,c('species','name')], .(name),
+                       function(x){
+                         symbol = gsub('[(]var.[0-9][)]','', x[,2])
+                         cbind(x,symbol=unlist(strsplit(symbol, '::')))
+                       })
+tf_translation$symbol = as.character(tf_translation$symbol)
+
+find_symbol <- function(symbol, id_table){
+    result = id_table[which(id_table$symbol==toupper(symbol)),'gene_id']
+    if (length(result) == 0){
+        result = NA
+    } else {
+        table = table(result)
+        result = names(which.max(table))
+    }
+    return(result)
+}
+
+
+tf_translation$gene_id = unlist(lapply(tf_translation$symbol, find_symbol,
+                                       id_table))
+
+fpkm_rep1 = rnaseq_rep1[tf_translation$gene_id, 'pme_FPKM']
+fpkm_rep2 = rnaseq_rep2[tf_translation$gene_id, 'pme_FPKM']
+
+
+tf_translation$K562_fpkm = pseudo_log10(rowMeans(cbind(fpkm_rep1, fpkm_rep2)))
+KBM7_essential = read.table('../raw_data/KBM7_essentialome_aac7557_SM_Table_S1.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+HAP1_essential = read.table('../raw_data/HAP1_essentialome_aac7557_SM_Table_S2.csv',
+                            stringsAsFactors=F, skip=1, header=T, sep='\t',
+                            row.names=2)
+ens_vec = gsub('[.].*','',tf_translation$gene_id)
+tf_translation$KBM7_essential = KBM7_essential[ens_vec, 'selected']=='YES'
+tf_translation$HAP1_essential = HAP1_essential[ens_vec, 'selected']=='YES'
+
+tf_expression = ddply(tf_translation,.(name),
+                      function(x){
+                          c(expression=min(x$K562_fpkm),
+                            KBM7_essential=any(x$KBM7_essential),
+                            HAP1_essential=any(x$HAP1_essential))
+                      })
+
+
+tf_table$K562_fpkm = NaN
+tf_match = match(tf_expression$name, tf_table$name)
+tf_table$K562_fpkm[tf_match] = tf_expression$expression
+tf_table$KBM7_essential = NA
+tf_table$KBM7_essential[tf_match] = tf_expression$KBM7_essential
+tf_table$HAP1_essential = NA
+tf_table$HAP1_essential[tf_match] = tf_expression$HAP1_essential
+
+
+tf_type = read.table('../raw_data/12859_2016_1349_MOESM2_ESM.csv',
+                     sep='\t', header=T, stringsAsFactors=F)
+match_vec = match(toupper(tf_table$name), tf_type$Symbol)
+tf_table$tf_type = NA
+not_na = !is.na(match_vec)
+tf_table[not_na, 'tf_type'] = tf_type[match_vec[not_na],
+                                      'Chromatin.Opening.Type']
+
+
+
+load('../raw_data/cl20170814_jaspar_gencode_cage_cor.rda')
+cor_data = t(cor_data)
+colnames(cor_data) = rownames(tf_table)[match(colnames(cor_data), tf_table$name)]
+
+
+
+aff_table_jaspar_300_50 = read.table('../raw_data/jaspar_affinity_300_50/seq_psam.dat',
+                                     stringsAsFactors=F)
+
+
+colnames(aff_table_jaspar_300_50) = gsub('.xml','', colnames(aff_table_jaspar_300_50))
+rownames(aff_table_jaspar_300_50) = gsub('::.*','', rownames(aff_table_jaspar_300_50))
+
+matched_evsr = matchSet(P[P$class_GROcap%in%c('repressed', 'escaper'), ],
+                        'class_GROcap', 'escaper', 'SuRE_K562')
+p_evsr = P[P$class_GROcap%in%c('repressed', 'escaper'), ]
+
+id_vec = rownames(tf_table)[which(tf_table$K562_fpkm > 0)]
+id_vec = id_vec[which(id_vec%in%colnames(cor_data))]
+
+cv_fit = cv.glmnet(as.matrix(aff_table_jaspar_300_50[rownames(p_evsr), id_vec]),
+                   factor(p_evsr$class_GROcap), family='binomial', parallel=T)
+plot(cv_fit)
+
+coef =coef(cv_fit, s = "lambda.min")
+
+repr_id = rownames(coef)[which(coef >0)]
+esc_id = rownames(coef)[which(coef <0)]
+
+kable(tf_table[repr_id, ])
+
+kable(tf_table[esc_id, ])
+
+cv_fit = cv.glmnet(as.matrix(cor_data[rownames(p_evsr), id_vec]),
+                   factor(p_evsr$class_GROcap), family='binomial', parallel=T)
+
+coef =coef(cv_fit, s = "lambda.min")
+
+repr_id = rownames(coef)[which(coef >0)]
+esc_id = rownames(coef)[which(coef <0)]
+
+kable(tf_table[repr_id, ])
+
+kable(tf_table[esc_id, ])
+```
