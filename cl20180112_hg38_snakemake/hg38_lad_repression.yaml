@@ -1,0 +1,10 @@
+input: ~/mydata/data/tracks/hg38/
+
+tissue_expression:
+    'hg38_fair+new_CAGE_peaks_phase1and2_counts.osc.txt.gz'
+
+transcripts:
+    gencode_v24: gencode.v24.annotation.gff3.gz
+
+transcript_selection:
+    fantom: hg38_fair+new_CAGE_peaks_phase1and2.bed.gz

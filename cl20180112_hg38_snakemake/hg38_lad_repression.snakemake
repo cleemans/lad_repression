@@ -1,0 +1,39 @@
+
+rule all:
+    input:
+        expand('raw_data/{name}_{exp}_tissue_expr.txt.gz',
+               name=config['transcripts'].keys(),
+               exp=config['transcript_selection'].keys())
+
+
+
+rule tss_expression:
+    input:
+        tss='raw_data/{name}_{exp}_link.txt'
+        exp='%s/%s' % (config['input']['tissue_expression'])
+    output:
+        'raw_data/{name}_{exp}_tissue_expr.txt.gz'
+
+rule tss_exp_selection:
+    input:
+        tss='raw_data/{name}_tss.bed.gz',
+        exp=lambda wildcards:
+                '%s/%s' % (config['input'],
+                           config['transcript_selection'][wildcards.exp])
+    output:
+        selection='raw_data/{name}_{exp}_tss.bed',
+        link='raw_data/{name}_{exp}_link.txt'
+    shell:
+        '{path}/scripts/tss_exp_selection_overlap.sh -t {input.tss} '
+        '                                            -e {input.exp} '
+        '                                            -s {output.selection} '
+        '                                            -l {output.link}'
+
+
+rule gff_to_tss_bed:
+    input:
+        '%s/%s' % (config['tracks'], config['transcripts'])
+    output:
+        'raw_data/{name}_tss.bed.gz'
+    shell:
+        '{path}/scripts/gff_to_tss_bed.sh {input} > {output}'
